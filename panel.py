@@ -31,6 +31,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import uuid as uuidlib
 from datetime import date, datetime, timedelta

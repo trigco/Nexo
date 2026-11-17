@@ -5106,8 +5106,12 @@ echo "==> Starting everything..."
 systemctl daemon-reload
 systemctl enable --now mpanel-net.service wsproxy.service stunnel-ssh.service \
   mpanel.service mpanel-enforce.timer 2>/dev/null || true
-if [ -x /usr/local/bin/dnstt-server ]; then
-  systemctl enable --now dnstt.service 2>/dev/null || true
+if [ -x /usr/local/bin/dnstt-server ] && [ -s /etc/dnstt/server.key ] && [ -s /etc/dnstt/server.pub ]; then
+  systemctl enable --now dnstt.service || \
+    echo "    WARNING: DNSTT did not start; inspect journalctl -u dnstt."
+else
+  systemctl disable --now dnstt.service 2>/dev/null || true
+  echo "    DNSTT left disabled: server binary or persistent keypair is missing."
 fi
 sleep 2
 systemctl --no-pager --plain list-units --type=service \

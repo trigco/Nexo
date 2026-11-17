@@ -63,3 +63,12 @@ Do not treat this branch as a finished v1 release or deploy it over the only pro
 ## Latest verification scope
 
 GitHub Actions currently checks Python compilation, shell syntax, protocol/unit tests, persistence/security tests, package snapshot tests and installer source synchronization. A green CI run does **not** replace a disposable Ubuntu VPS integration test. Real protocol handshakes, Xray core version compatibility, OpenVPN client connect/revoke behavior and upgrade rollback still require VPS validation.
+
+
+### OpenVPN admission hardening
+
+- OpenVPN certificates now use unique per-issuance common names, so deleting and recreating a panel username does not reuse a revoked Easy-RSA identity.
+- The panel atomically publishes a root-owned, world-readable list of disabled/expired/quota-exhausted OpenVPN common names.
+- Installer configures a fail-closed `client-connect` hook that rejects listed identities on new connections.
+- Existing live OpenVPN sessions are **not yet forcibly disconnected** at quota/suspension time; this remains a release gate. The admission hook prevents reconnect after policy lock.
+- Protocol removal in the user editor is blocked until a complete per-protocol revoke workflow is available. Deleting a user performs the current full revoke path.

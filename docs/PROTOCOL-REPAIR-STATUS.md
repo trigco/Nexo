@@ -86,10 +86,11 @@ GitHub Actions currently checks Python compilation, shell syntax, protocol/unit 
 - Xray candidate configuration files are assigned `root:xray` ownership and mode `0640` before atomic publication; rollback candidates receive the same attributes. This prevents a generated config from reverting to `root:root` mode and becoming unreadable to the Xray service account.
 - SSH-only account creation, editing, renewal and deletion no longer require an Xray configuration rebuild. Xray sync remains mandatory for users with Xray-backed protocols.
 - Service actions now verify the resulting systemd active/inactive state before the API reports success. A timeout includes recent unit journal output, and the UI reports the verified state rather than saying only that the action was sent.
+- DNSTT installer now uses UDP/5300 behind an inbound UDP/53 redirect to avoid binding conflicts with systemd-resolved's loopback stub; build and key-generation failures are visible and incomplete installs are not enabled.
 - Added regression tests for SSH-only edit/delete and protocol-aware provisioning, plus service state verification.
 
 ## Remaining protocol release gates
 
-- DNSTT is still installed by a best-effort installer block. The service currently forwards the tunnel to SSH port 22 only; there is no shared SSH/VLESS protocol multiplexer, and the panel does not safely resolve the UDP/53 listener conflict with the local DNS stub. Do not enable this service on a host until the listener and shared-stream routing design is implemented and tested.
+- DNSTT installer now exposes source/build/key-generation errors instead of suppressing them. Its service listens on UDP/5300 and installs an idempotent PREROUTING redirect for external UDP/53 traffic, leaving the local systemd-resolved loopback stub untouched. The service still forwards to SSH port 22 only; there is no shared SSH/VLESS protocol multiplexer yet. DNSTT shared-domain operation therefore remains incomplete and must not be represented as VLESS-ready.
 - OpenVPN disabled-user admission is fail-closed for new connections. Existing connected clients are not yet actively disconnected when quota/expiry/suspension is reached.
 - The branch has not been verified against a disposable Ubuntu 24.04 VPS after these latest changes. CI and live protocol tests must pass before production deployment.

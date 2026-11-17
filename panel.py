@@ -2268,6 +2268,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'",
+        )
+        if isinstance(self.connection, ssl.SSLSocket):
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
 
     def send_json(self, payload, status=200, headers=None):
         body = json.dumps(payload).encode()
@@ -2471,6 +2481,10 @@ class Handler(BaseHTTPRequestHandler):
                     now = int(time.time())
                     conn = db()
                     conn.execute(
+                        "DELETE FROM sessions WHERE expires_at < ? OR revoked_at < ?",
+                        (now, now - 30 * 86400),
+                    )
+                    conn.execute(
                         "INSERT INTO sessions (token_hash, csrf_hash, created_at, expires_at) "
                         "VALUES (?, ?, ?, ?)",
                         (token_hash(token), token_hash(csrf), now, now + SESSION_TTL_SECONDS),
@@ -2487,6 +2501,8 @@ class Handler(BaseHTTPRequestHandler):
                         ]},
                     )
                 record_login_failure(source_key)
+                audit_event("auth.login_failed", request_id=self.headers.get("X-Request-ID", ""),
+                            outcome="failure", details={"source": source_key})
                 return self.send_json({"error": "Wrong username or password."},
                                       status=403)
             if path == "/api/logout":

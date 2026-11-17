@@ -72,3 +72,10 @@ GitHub Actions currently checks Python compilation, shell syntax, protocol/unit 
 - Installer configures a fail-closed `client-connect` hook that rejects listed identities on new connections.
 - Existing live OpenVPN sessions are **not yet forcibly disconnected** at quota/suspension time; this remains a release gate. The admission hook prevents reconnect after policy lock.
 - Protocol removal in the user editor is blocked until a complete per-protocol revoke workflow is available. Deleting a user performs the current full revoke path.
+
+
+### Settings integrity
+
+- Hostnames, IPs, URL paths, ports, brand text and Telegram links are validated before persistence.
+- Service ports that are not yet reconfigured by Nexo are now read-only in the UI and rejected by the API if changed; this prevents the panel from generating client links to ports the daemon is not actually listening on.
+- Panel port remains editable but explicitly requires a service restart before taking effect.

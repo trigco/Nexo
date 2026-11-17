@@ -525,17 +525,24 @@ def gen_reality_keys():
             priv = line.split(":", 1)[1].strip()
         if "public" in low and ":" in line:
             pub = line.split(":", 1)[1].strip().split(" ")[0]
-    if priv and pub:
+    if result.returncode == 0 and priv and pub:
         return priv, pub
-    # Fallback: OpenSSL X25519; raw keys are the last 32 bytes of the DER forms.
-    import subprocess
+    # Fallback: OpenSSL X25519; validate each subprocess result.
     proc = subprocess.run(["openssl", "genpkey", "-algorithm", "X25519"],
                           capture_output=True, timeout=20)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError("Unable to generate Reality private key: " +
+                           (proc.stderr or b"").decode(errors="replace")[-500:])
     priv_pem = proc.stdout
-    priv_der = subprocess.run(["openssl", "pkey", "-outform", "DER"],
-                              input=priv_pem, capture_output=True, timeout=20).stdout
-    pub_der = subprocess.run(["openssl", "pkey", "-pubout", "-outform", "DER"],
-                             input=priv_pem, capture_output=True, timeout=20).stdout
+    priv_result = subprocess.run(["openssl", "pkey", "-outform", "DER"],
+                                 input=priv_pem, capture_output=True, timeout=20)
+    pub_result = subprocess.run(["openssl", "pkey", "-pubout", "-outform", "DER"],
+                                input=priv_pem, capture_output=True, timeout=20)
+    if priv_result.returncode != 0 or pub_result.returncode != 0:
+        raise RuntimeError("OpenSSL failed to derive Reality key pair.")
+    priv_der, pub_der = priv_result.stdout, pub_result.stdout
+    if len(priv_der) < 32 or len(pub_der) < 32:
+        raise RuntimeError("OpenSSL returned malformed X25519 key material.")
     return _b64url(priv_der[-32:]), _b64url(pub_der[-32:])
 
 
@@ -547,9 +554,13 @@ def gen_inbound_cert(inbound_id, server_name):
     if MOCK:
         return cert, key
     if not (os.path.exists(cert) and os.path.exists(key)):
-        run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-             "-days", "3650", "-keyout", key, "-out", cert,
-             "-subj", f"/CN={server_name or 'localhost'}"], timeout=60)
+        result = run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                      "-days", "3650", "-keyout", key, "-out", cert,
+                      "-subj", f"/CN={server_name or 'localhost'}"], timeout=60)
+        if result.returncode != 0 or not (os.path.isfile(cert) and os.path.isfile(key)):
+            raise RuntimeError("TLS certificate generation failed: " +
+                               (result.stderr or result.stdout or "")[-800:])
+        os.chmod(key, 0o600)
     return cert, key
 
 
@@ -742,6 +753,15 @@ def _validate_inbound(data):
         raise ValueError("Unknown Shadowsocks method.")
     if stream["flow"] not in ("", "xtls-rprx-vision"):
         raise ValueError("Unknown VLESS flow.")
+    if stream["flow"] and (protocol != "vless" or security != "reality" or network != "tcp"):
+        raise ValueError("xtls-rprx-vision requires VLESS + TCP + REALITY.")
+    if security == "reality" and not stream["dest"]:
+        stream["dest"] = "www.microsoft.com:443"
+    if security == "reality":
+        if ":" not in stream["dest"] or not stream["sni"] and not stream["dest"].split(":")[0]:
+            raise ValueError("REALITY requires a valid destination host:port and SNI.")
+    if security == "tls" and not stream["sni"]:
+        raise ValueError("TLS inbound requires an SNI/server hostname.")
     max_clients = int(data.get("max_clients") or 0)
     if max_clients < 0:
         raise ValueError("Max clients cannot be negative.")

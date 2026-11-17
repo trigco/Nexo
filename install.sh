@@ -337,6 +337,8 @@ def init_db():
     if "package_snapshot_json" not in columns:
         conn.execute(
             "ALTER TABLE users ADD COLUMN package_snapshot_json TEXT NOT NULL DEFAULT '{}'")
+    if "ovpn_cert_name" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN ovpn_cert_name TEXT NOT NULL DEFAULT ''")
     # No inbounds are seeded: the admin creates exactly the inbounds they
     # want (older versions auto-created two defaults, which looked like
     # fake/pre-opened entries in the panel).
@@ -1757,16 +1759,18 @@ def create_user(data):
     if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         conn.close()
         raise ValueError("A user with that name already exists in the panel.")
+    ovpn_cert_name = (f"{username}-{secrets.token_hex(3)}"
+                      if "ovpn" in protocols else "")
     cursor = conn.execute(
         "INSERT INTO users (username, password, protocols, uuid, quota_bytes, "
         "expire_date, created_at, note, ip_limit, hwid_limit, inbound_ids, "
-        "package_id, package_snapshot_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "package_id, package_snapshot_json, ovpn_cert_name) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (username, password if ({"trojan", "shadowsocks"} & set(protocols)) else "",
          ",".join(protocols), str(uuidlib.uuid4()),
          quota, expire, datetime.now().isoformat(timespec="seconds"),
          note, ip_limit, hwid_limit, inbound_ids, package_id,
-         json.dumps(package_data) if package_data else "{}"),
+         json.dumps(package_data) if package_data else "{}", ovpn_cert_name),
     )
     user_id = cursor.lastrowid
     conn.commit()
@@ -1778,7 +1782,7 @@ def create_user(data):
             ssh_create_user(username, password, expire)
             ssh_created = True
         if "ovpn" in protocols:
-            ovpn_create_user(username)
+            ovpn_create_user(ovpn_cert_name)
             ovpn_created = True
         xray_sync_users(list_users_as_rows())
     except Exception:
@@ -1786,7 +1790,7 @@ def create_user(data):
         # failure visible; cleanup is best-effort and never hides it.
         if ovpn_created:
             try:
-                ovpn_revoke_user(username)
+                ovpn_revoke_user(ovpn_cert_name)
             except Exception:
                 pass
         if ssh_created:
@@ -1871,6 +1875,11 @@ def update_user(user_id, data):
             raise ValueError("One or more selected protocols are unsupported.")
         new_protocols = list(dict.fromkeys(new_protocols))
         if new_protocols != protocols:
+            removed = [p for p in protocols if p not in new_protocols]
+            if removed:
+                raise ValueError(
+                    "Protocol removal requires a dedicated revoke workflow. "
+                    "Delete this user and create a new one with the desired protocols.")
             check_inbound_capacity(new_protocols, exclude_user_id=user_id)
             added = [p for p in new_protocols if p not in protocols]
             if "ssh" in added and not ssh_user_exists(row["username"]):
@@ -1880,7 +1889,8 @@ def update_user(user_id, data):
                     credential_once = ssh_password
                 ssh_create_user(row["username"], ssh_password, row["expire_date"])
             if "ovpn" in added:
-                ovpn_create_user(row["username"])
+                row["ovpn_cert_name"] = f"{row['username']}-{secrets.token_hex(3)}"
+                ovpn_create_user(row["ovpn_cert_name"])
             if ({"trojan", "shadowsocks"} & set(new_protocols)) and not row["password"]:
                 credential_once = secrets.token_urlsafe(12)
                 row["password"] = credential_once
@@ -1938,13 +1948,13 @@ def update_user(user_id, data):
         "UPDATE users SET quota_bytes = ?, expire_date = ?, password = ?, "
         "note = ?, enabled = ?, ip_limit = ?, hwid_limit = ?, hwids = ?, "
         "protocols = ?, auto_locked = ?, inbound_ids = ?, package_id = ?, "
-        "package_snapshot_json = ? WHERE id = ?",
+        "package_snapshot_json = ?, ovpn_cert_name = ? WHERE id = ?",
         (row["quota_bytes"], row["expire_date"], row["password"],
          row["note"], row["enabled"], row["ip_limit"], row["hwid_limit"],
          row["hwids"], row["protocols"],
          row["auto_locked"] if "auto_locked" in row else 0,
          row["inbound_ids"] if "inbound_ids" in row else "", package_id,
-         json.dumps(package_data), user_id),
+         json.dumps(package_data), row.get("ovpn_cert_name", ""), user_id),
     )
     if "ssh" in protocols and "days" in data:
         run(["chage", "-E", row["expire_date"] or "-1", row["username"]])
@@ -1992,7 +2002,8 @@ def renew_user(user_id, days, reset_traffic):
             row["ssh_last"] = ssh_chain_bytes(row["username"])
         up, down = xray_stats().get(row["username"], (0, 0))
         row["xray_up_last"], row["xray_down_last"] = up, down
-        row["ovpn_last"] = ovpn_status_bytes().get(row["username"], 0)
+        row["ovpn_last"] = ovpn_status_bytes().get(
+            row.get("ovpn_cert_name") or row["username"], 0)
     row["enabled"] = 1
     row["auto_locked"] = 0
     conn.execute(
@@ -2197,7 +2208,7 @@ def delete_user(user_id):
         if "ssh" in protocols and ssh_user_exists(row["username"]):
             ssh_delete_user(row["username"])
         if "ovpn" in protocols:
-            ovpn_revoke_user(row["username"])
+            ovpn_revoke_user(row.get("ovpn_cert_name") or row["username"])
     except Exception:
         # Keep the record present but disabled so an operator can repair cleanup.
         raise
@@ -2234,7 +2245,7 @@ def enforce():
             used += max(delta, 0)
             row["xray_up_last"], row["xray_down_last"] = up, down
         if "ovpn" in row["protocols"].split(","):
-            current = ostats.get(row["username"], 0)
+            current = ostats.get(row.get("ovpn_cert_name") or row["username"], 0)
             delta = current - row["ovpn_last"] if current >= row["ovpn_last"] else 0
             used += max(delta, 0)
             row["ovpn_last"] = current
@@ -2486,7 +2497,7 @@ class Handler(BaseHTTPRequestHandler):
                                           status=403)
                 audit_event("openvpn.profile_download", "user", row["id"],
                             request_id=self.headers.get("X-Request-ID", ""))
-                config = ovpn_client_config(row["username"], settings)
+                config = ovpn_client_config(row.get("ovpn_cert_name") or row["username"], settings)
                 return self.send_text(
                     config, content_type="application/octet-stream",
                     headers={"Content-Disposition":

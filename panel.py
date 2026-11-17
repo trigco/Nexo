@@ -203,6 +203,18 @@ def init_db():
             details_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS packages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            quota_bytes INTEGER NOT NULL DEFAULT 0,
+            validity_days INTEGER NOT NULL DEFAULT 30,
+            ip_limit INTEGER NOT NULL DEFAULT 0,
+            protocols_json TEXT NOT NULL DEFAULT '["ssh"]',
+            inbound_ids_json TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -260,6 +272,11 @@ def init_db():
     if "inbound_ids" not in columns:
         conn.execute(
             "ALTER TABLE users ADD COLUMN inbound_ids TEXT NOT NULL DEFAULT ''")
+    if "package_id" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN package_id INTEGER")
+    if "package_snapshot_json" not in columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN package_snapshot_json TEXT NOT NULL DEFAULT '{}'")
     # No inbounds are seeded: the admin creates exactly the inbounds they
     # want (older versions auto-created two defaults, which looked like
     # fake/pre-opened entries in the panel).

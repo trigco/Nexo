@@ -1815,6 +1815,11 @@ def update_user(user_id, data):
             raise ValueError("One or more selected protocols are unsupported.")
         new_protocols = list(dict.fromkeys(new_protocols))
         if new_protocols != protocols:
+            removed = [p for p in protocols if p not in new_protocols]
+            if removed:
+                raise ValueError(
+                    "Protocol removal requires a dedicated revoke workflow. "
+                    "Delete this user and create a new one with the desired protocols.")
             check_inbound_capacity(new_protocols, exclude_user_id=user_id)
             added = [p for p in new_protocols if p not in protocols]
             if "ssh" in added and not ssh_user_exists(row["username"]):
@@ -1824,7 +1829,8 @@ def update_user(user_id, data):
                     credential_once = ssh_password
                 ssh_create_user(row["username"], ssh_password, row["expire_date"])
             if "ovpn" in added:
-                ovpn_create_user(row["username"])
+                row["ovpn_cert_name"] = f"{row['username']}-{secrets.token_hex(3)}"
+                ovpn_create_user(row["ovpn_cert_name"])
             if ({"trojan", "shadowsocks"} & set(new_protocols)) and not row["password"]:
                 credential_once = secrets.token_urlsafe(12)
                 row["password"] = credential_once
@@ -1882,13 +1888,13 @@ def update_user(user_id, data):
         "UPDATE users SET quota_bytes = ?, expire_date = ?, password = ?, "
         "note = ?, enabled = ?, ip_limit = ?, hwid_limit = ?, hwids = ?, "
         "protocols = ?, auto_locked = ?, inbound_ids = ?, package_id = ?, "
-        "package_snapshot_json = ? WHERE id = ?",
+        "package_snapshot_json = ?, ovpn_cert_name = ? WHERE id = ?",
         (row["quota_bytes"], row["expire_date"], row["password"],
          row["note"], row["enabled"], row["ip_limit"], row["hwid_limit"],
          row["hwids"], row["protocols"],
          row["auto_locked"] if "auto_locked" in row else 0,
          row["inbound_ids"] if "inbound_ids" in row else "", package_id,
-         json.dumps(package_data), user_id),
+         json.dumps(package_data), row.get("ovpn_cert_name", ""), user_id),
     )
     if "ssh" in protocols and "days" in data:
         run(["chage", "-E", row["expire_date"] or "-1", row["username"]])

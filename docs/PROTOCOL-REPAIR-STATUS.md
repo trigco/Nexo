@@ -41,3 +41,25 @@ These checks are not simulated by the unit tests and have not been performed on 
 - Complete the broader v1 RBAC, package, outbound/routing, audit and UI implementation.
 
 Do not treat this branch as a finished v1 release or deploy it over the only production VPS without a snapshot and rollback path.
+
+
+## Follow-up hardening added
+
+- Replaced volatile in-memory sessions with hashed, persistent SQLite session records; logout revokes sessions.
+- Added CSRF double-submit token validation, same-origin checks for browser writes, secure HttpOnly session cookies, request body limits, security headers and login throttling.
+- Removed SSH-only passwords from persistent user rows and public user serializers. Initial/reset SSH credentials are delivered once to the administrator. Trojan/Shadowsocks credentials remain in the restricted local database because Xray needs their protocol secrets to rebuild the configuration; encrypt-at-rest vault migration is still required.
+- Added package CRUD and immutable applied package snapshots, including package assignment from the user editor.
+- Added audit events and an audit-log screen for authentication, user, package, inbound, service and settings actions.
+- Corrected SSH bandwidth accounting to count upload and conntrack-marked reply/download bytes separately without adding the mark-setting rule to the usage total.
+- Expanded Xray per-user accounting to Trojan and Shadowsocks in addition to VLESS and VMess.
+- Rejected invalid inbound references rather than silently treating them as “all matching inbounds”.
+- Added listener collision detection before creating or moving an inbound.
+- Added compensating cleanup for partially provisioned users and changed deletion order so Xray revocation happens before the user row is removed.
+- OpenVPN profile downloads now require an active user with OpenVPN entitlement; Easy-RSA failures are surfaced instead of silently ignored.
+- Removed unsupported per-user DNSTT provisioning and disabled misleading HWID enforcement controls.
+- Installer now backs up existing panel/Xray/OpenVPN/SSH/service configuration and firewall state, preserves existing admin credentials on upgrades, and preserves existing TLS certificates and SSH policy files.
+- Added installer-source synchronization checks so embedded panel/proxy copies cannot silently drift from the standalone sources.
+
+## Latest verification scope
+
+GitHub Actions currently checks Python compilation, shell syntax, protocol/unit tests, persistence/security tests, package snapshot tests and installer source synchronization. A green CI run does **not** replace a disposable Ubuntu VPS integration test. Real protocol handshakes, Xray core version compatibility, OpenVPN client connect/revoke behavior and upgrade rollback still require VPS validation.

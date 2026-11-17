@@ -1720,6 +1720,8 @@ def renew_user(user_id, days, reset_traffic):
         run(["chage", "-E", row["expire_date"], row["username"]])
         ssh_set_enabled(row["username"], True)
     xray_sync_users(list_users_as_rows())
+    audit_event("user.renew", "user", user_id,
+                details={"days": days, "traffic_reset": bool(reset_traffic)})
     return user_public(fresh, get_settings())
 
 
@@ -2303,9 +2305,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "services": services_list()})
             if path == "/api/settings":
                 data = self.body_json()
+                changed_keys = []
                 for key, value in data.items():
                     if key in DEFAULT_SETTINGS:
                         set_setting(key, value)
+                        changed_keys.append(key)
+                if changed_keys:
+                    audit_event("settings.update", "settings", "server",
+                                request_id=self.headers.get("X-Request-ID", ""),
+                                details={"keys": changed_keys})
                 if "dnstt_domain" in data and not MOCK:
                     try:
                         os.makedirs(DNSTT_DIR, exist_ok=True)

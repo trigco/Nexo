@@ -1868,11 +1868,9 @@ def create_user(data):
         cleanup.execute("DELETE FROM users WHERE id = ?", (user_id,))
         cleanup.commit()
         cleanup.close()
-        if set(protocols) & XRAY_USER_PROTOCOLS:
-            try:
-                xray_sync_users(list_users_as_rows())
-            except Exception:
-                pass
+        # The failed sync did not publish a valid configuration; after the
+        # database row is removed there is no stale client to revoke. Do not
+        # call the same failing sync a second time during compensation.
         raise
     settings = get_settings()
     conn = db()

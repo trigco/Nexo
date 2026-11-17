@@ -156,5 +156,65 @@ class XrayInboundTests(unittest.TestCase):
             })
 
 
+class PersistenceAndSecurityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="nexo-security-test-")
+        panel.BASE = self.tmp.name
+        panel.DB_PATH = os.path.join(self.tmp.name, "panel.db")
+        panel.MOCK = True
+        panel.init_db()
+        conn = panel.db()
+        conn.execute("UPDATE admin SET password_hash=? WHERE id=1",
+                     (panel.hash_password("correct-horse-battery"),))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_ssh_only_password_is_not_persisted_or_serialized(self):
+        created = panel.create_user({
+            "username": "alice", "protocols": ["ssh"],
+            "password": "one-time-secret-123", "days": 30,
+        })
+        self.assertEqual(created["credential_once"], "one-time-secret-123")
+        self.assertNotIn("password", created)
+        rows = panel.list_users_as_rows()
+        self.assertEqual(rows[0]["password"], "")
+        listed = panel.user_public(rows[0], panel.get_settings())
+        self.assertNotIn("password", listed)
+        self.assertNotIn("credential_once", listed)
+
+    def test_invalid_inbound_assignment_is_rejected_not_treated_as_all(self):
+        with self.assertRaises(ValueError):
+            panel.clean_inbound_ids({"inbound_ids": [999999]})
+
+    def test_user_input_rejects_unknown_protocol_and_negative_quota(self):
+        with self.assertRaises(ValueError):
+            panel.create_user({"username": "badproto", "protocols": ["ssh", "madeup"]})
+        with self.assertRaises(ValueError):
+            panel.create_user({"username": "badquota", "protocols": ["ssh"],
+                               "quota_gb": -1})
+
+    def test_sessions_are_persisted_as_hashes(self):
+        token = "raw-session-token"
+        csrf = "raw-csrf-token"
+        now = int(time.time())
+        conn = panel.db()
+        conn.execute(
+            "INSERT INTO sessions (token_hash, csrf_hash, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (panel.token_hash(token), panel.token_hash(csrf), now, now + 600),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM sessions").fetchone()
+        conn.close()
+        self.assertNotIn(token, dict(row).values())
+        self.assertNotIn(csrf, dict(row).values())
+        self.assertEqual(row["token_hash"], panel.token_hash(token))
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

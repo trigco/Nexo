@@ -16,11 +16,11 @@ class FrontendSyntaxTests(unittest.TestCase):
         panel = (ROOT / "panel.py").read_text()
         html_match = re.search(r'INDEX_HTML = r"""(.*?)"""', panel, re.DOTALL)
         self.assertIsNotNone(html_match, "INDEX_HTML block not found")
-        scripts = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>",
+        scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>",
                              html_match.group(1), re.DOTALL | re.IGNORECASE)
         self.assertTrue(scripts, "No inline JavaScript found")
         with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8") as fh:
-            fh.write("\\n".join(scripts))
+            fh.write("\n".join(scripts))
             fh.flush()
             result = subprocess.run([node, "--check", fh.name],
                                     capture_output=True, text=True)

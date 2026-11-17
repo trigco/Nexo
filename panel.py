@@ -2881,7 +2881,7 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="ufQuota" type="number" step="0.5" min="0" value="100"></div>
       <div class="field"><label>Validity (days)</label><input id="ufDays" type="number" min="1" value="30"></div>
       <div class="field"><label>IP limit (0 = unlimited)</label><input id="ufIpLimit" type="number" min="0" value="0"></div>
-      <div class="field"><label>Device / HWID limit (0 = unlimited)</label><input id="ufHwidLimit" type="number" min="0" value="0"></div>
+      <div class="field"><label>Device limit — not supported by current protocols</label><input id="ufHwidLimit" type="number" min="0" value="0" disabled></div>
       <div class="field full"><label>Note</label><input id="ufNote" placeholder="Customer name, phone, package…"></div>
     </div>
     <div class="field" style="margin-top:4px"><label>Protocols</label>
@@ -3490,7 +3490,7 @@ window.showInfo = id => {
     + (u.uuid ? kv("UUID", u.uuid, true) : "")
     + kv("Expires", u.expire_date || "Never") + kv("Traffic", fmtBytes(u.used_bytes) + " / " + (u.quota_bytes?fmtBytes(u.quota_bytes):"Unlimited"))
     + kv("IP limit", u.ip_limit ? u.ip_limit+" IPs" : "Unlimited")
-    + kv("Device (HWID) limit", u.hwid_limit ? String(u.hwid_limit) : "Unlimited")
+    + kv("Device limit", "Not supported — use concurrent session / IP limits")
     + ((u.hwids&&u.hwids.length) ? kv("Registered HWIDs", u.hwids.join(", ")) : "")
     + ((u.online_ips&&u.online_ips.length) ? kv("Online IPs", u.online_ips.join(", ")) : "")
     + "</div>";

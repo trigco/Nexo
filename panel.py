@@ -3384,7 +3384,7 @@ $("#userForm").addEventListener("submit", async e => {
     const result = await api(id ? "/api/users/"+id : "/api/users",
       {method:"POST", body: JSON.stringify(payload)});
     $("#userModalWrap").style.display = "none";
-    if(!id && result.user && result.user.credential_once){
+    if(result.user && result.user.credential_once){
       const secret = result.user.credential_once;
       delete result.user.credential_once;
       alert("One-time credential for " + result.user.username + ":\\n\\n" + secret +

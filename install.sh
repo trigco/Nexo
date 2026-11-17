@@ -4839,6 +4839,20 @@ if [ ! -f pki/ca.crt ]; then
   cp pki/crl.pem /etc/openvpn/crl.pem
 fi
 mkdir -p /etc/openvpn/server
+cat > /usr/local/bin/nexo-ovpn-client-connect.sh <<'EOF'
+#!/bin/sh
+set -eu
+name="${common_name:-}"
+[ -n "$name" ] || exit 1
+[ -r /etc/openvpn/nexo-disabled-clients.txt ] || exit 1
+if grep -Fxq -- "$name" /etc/openvpn/nexo-disabled-clients.txt; then
+  exit 1
+fi
+exit 0
+EOF
+chmod 755 /usr/local/bin/nexo-ovpn-client-connect.sh
+touch /etc/openvpn/nexo-disabled-clients.txt
+chmod 644 /etc/openvpn/nexo-disabled-clients.txt
 cat > /etc/openvpn/server/server.conf <<'EOF'
 port 33500
 proto udp
@@ -4861,6 +4875,8 @@ persist-key
 persist-tun
 status /var/log/openvpn/status.log
 crl-verify /etc/openvpn/crl.pem
+script-security 2
+client-connect /usr/local/bin/nexo-ovpn-client-connect.sh
 verb 3
 explicit-exit-notify 1
 EOF

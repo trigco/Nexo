@@ -3299,28 +3299,28 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <section class="page active loading" id="page-dashboard">
         <div class="kpis">
           <div class="kpi metric-card" title="Processor utilization">
-            <div class="metric-head"><span class="metric-icon cpu-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><path d="M9 9h6v6H9z"/></svg></span><span class="metric-label">PROCESSOR</span></div>
+            <div class="metric-head"><span class="metric-icon cpu-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><path d="M9 9h6v6H9z"/></svg></span></div>
             <div class="metric-value"><b id="valCpu">—</b><span>%</span></div>
             <div class="metric-detail" id="loadTxt">Load —</div>
             <div class="metric-extrema"><span id="cpuPeak">Peak —</span><span id="cpuLow">Low —</span></div>
             <canvas class="spark" id="sparkCpu" width="300" height="60" aria-label="CPU history"></canvas>
           </div>
           <div class="kpi metric-card" title="Memory utilization">
-            <div class="metric-head"><span class="metric-icon ram-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 7V4m5 3V4m5 3V4M7 17v3m5-3v3m5-3v3M7 10h2v4H7zm5 0h2v4h-2zm5 0h1v4h-1z"/></svg></span><span class="metric-label">MEMORY</span></div>
+            <div class="metric-head"><span class="metric-icon ram-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 7V4m5 3V4m5 3V4M7 17v3m5-3v3m5-3v3M7 10h2v4H7zm5 0h2v4h-2zm5 0h1v4h-1z"/></svg></span></div>
             <div class="metric-value"><b id="valRam">—</b><span>%</span></div>
             <div class="metric-detail" id="ramTxt">—</div>
             <div class="metric-extrema"><span id="ramPeak">Peak —</span><span id="ramLow">Low —</span></div>
             <canvas class="spark" id="sparkRam" width="300" height="60" aria-label="Memory history"></canvas>
           </div>
           <div class="kpi metric-card" title="Disk storage utilization">
-            <div class="metric-head"><span class="metric-icon disk-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6m4 4h.01"/></svg></span><span class="metric-label">STORAGE</span></div>
+            <div class="metric-head"><span class="metric-icon disk-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6m4 4h.01"/></svg></span></div>
             <div class="metric-value"><b id="valDisk">—</b><span>%</span></div>
             <div class="metric-detail" id="diskTxt">—</div>
             <div class="metric-extrema"><span id="diskPeak">Peak —</span><span id="diskLow">Low —</span></div>
             <div class="metric-foot"><span class="metric-track"><i id="diskBar"></i></span><span id="diskFree">— free</span></div>
           </div>
           <div class="kpi metric-card" title="Active and total user accounts">
-            <div class="metric-head"><span class="metric-icon users-icon"><svg class="ic" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="metric-label">ACCOUNTS</span></div>
+            <div class="metric-head"><span class="metric-icon users-icon"><svg class="ic" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span></div>
             <div class="metric-value"><b id="valUsers">—</b><span id="usersTotalUnit">/ —</span></div>
             <div class="metric-detail" id="usersTxt">— active</div>
             <div class="metric-extrema"><span id="usersPeak">Peak —</span><span id="usersLow">Low —</span></div>

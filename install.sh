@@ -3313,7 +3313,7 @@ import sys
 import threading
 
 LISTEN_HOST = os.environ.get("WSPROXY_HOST", "0.0.0.0")
-LISTEN_PORT = int(os.environ.get("WSPROXY_PORT", sys.argv[1] if len(sys.argv) > 1 else 80))
+LISTEN_PORT = int(os.environ.get("WSPROXY_PORT", sys.argv[1] if __name__ == "__main__" and len(sys.argv) > 1 else 80))
 UPSTREAM_HOST = os.environ.get("WSPROXY_UPSTREAM_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("WSPROXY_UPSTREAM_PORT", "22"))
 MAX_HEADER = 16384

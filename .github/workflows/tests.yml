@@ -14,6 +14,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Validate installer shell syntax
+        run: bash -n install.sh
       - name: Compile Python modules
         run: python -m py_compile panel.py wsproxy.py
       - name: Run protocol regression tests

@@ -242,9 +242,10 @@ def handle(client):
     upstream = None
     try:
         client.settimeout(15)
-        _, remainder = perform_handshake(client)
+        # Verify sshd is reachable before returning 101 to the client.
         upstream = socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=10)
         upstream.settimeout(None)
+        _, remainder = perform_handshake(client)
         client.settimeout(None)
         send_lock = threading.Lock()
         down = threading.Thread(

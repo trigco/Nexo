@@ -9,7 +9,7 @@ class InstallerSyncTests(unittest.TestCase):
     def assert_embedded_source_matches(self, filename, marker, command):
         installer = (ROOT / "install.sh").read_text()
         source = (ROOT / filename).read_text().strip()
-        pattern = re.escape(command + marker) + r"\n(.*?)\n" + re.escape(marker)
+        pattern = re.escape(command + marker + "'") + r"\n(.*?)\n" + re.escape(marker)
         match = re.search(pattern, installer, re.DOTALL)
         self.assertIsNotNone(match, f"Missing embedded {filename} heredoc")
         self.assertEqual(match.group(1).strip(), source,

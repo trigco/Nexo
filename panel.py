@@ -646,6 +646,7 @@ def xray_save(config):
 
 
 INBOUND_PROTOCOLS = ("vless", "vmess", "trojan", "shadowsocks")
+XRAY_USER_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks"}
 INBOUND_NETWORKS = ("tcp", "ws", "grpc", "httpupgrade", "xhttp", "kcp")
 INBOUND_SECURITIES = ("none", "tls", "reality")
 SS_METHODS = {
@@ -1345,8 +1346,6 @@ def user_public(row, settings, online_ips=None):
         info[key] = inbound_link(inbound, row, settings)
     if "ovpn" in protocols:
         info["ovpn_config"] = f"/api/users/{row['id']}/ovpn"
-    if "dnstt" in protocols:
-        info["dnstt_domain"] = settings.get("dnstt_domain", "")
     data["info"] = info
     return data
 
@@ -1431,7 +1430,7 @@ def create_user(data):
     if username in ("root", "admin", "ubuntu"):
         raise ValueError("That username is reserved.")
     requested_protocols = data.get("protocols", ["ssh"])
-    allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn", "dnstt"}
+    allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
     if not isinstance(requested_protocols, list) or not requested_protocols:
         raise ValueError("Pick at least one protocol.")
     if any(p not in allowed_protocols for p in requested_protocols):
@@ -1540,10 +1539,14 @@ def update_user(user_id, data):
     protocols = row["protocols"].split(",")
     credential_once = None
     if "protocols" in data:
-        new_protocols = [p for p in data.get("protocols") or []
-                         if p in ("ssh", "vless", "vmess", "trojan",
-                                  "shadowsocks", "ovpn", "dnstt")]
-        if new_protocols and new_protocols != protocols:
+        new_protocols = data.get("protocols")
+        allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
+        if not isinstance(new_protocols, list) or not new_protocols:
+            raise ValueError("A user must have at least one enabled protocol.")
+        if any(p not in allowed_protocols for p in new_protocols):
+            raise ValueError("One or more selected protocols are unsupported.")
+        new_protocols = list(dict.fromkeys(new_protocols))
+        if new_protocols != protocols:
             check_inbound_capacity(new_protocols, exclude_user_id=user_id)
             added = [p for p in new_protocols if p not in protocols]
             if "ssh" in added and not ssh_user_exists(row["username"]):
@@ -1564,9 +1567,14 @@ def update_user(user_id, data):
         check_inbound_capacity(protocols, exclude_user_id=user_id,
                                inbound_ids=row["inbound_ids"])
     if "quota_gb" in data:
-        row["quota_bytes"] = int(round(float(data["quota_gb"] or 0) * GB))
+        quota_gb = float(data["quota_gb"] or 0)
+        if not 0 <= quota_gb <= 1000000:
+            raise ValueError("Quota must be between 0 and 1,000,000 GB.")
+        row["quota_bytes"] = int(round(quota_gb * GB))
     if "days" in data:
         days = int(data["days"] or 0)
+        if not 0 <= days <= 3650:
+            raise ValueError("Validity must be between 0 and 3650 days.")
         row["expire_date"] = (
             (today() + timedelta(days=days)).isoformat() if days > 0 else ""
         )
@@ -1590,8 +1598,10 @@ def update_user(user_id, data):
         row["note"] = data["note"]
     if "ip_limit" in data:
         row["ip_limit"] = int(data["ip_limit"] or 0)
-    if "hwid_limit" in data:
-        row["hwid_limit"] = int(data["hwid_limit"] or 0)
+        if not 0 <= row["ip_limit"] <= 10000:
+            raise ValueError("IP limit must be between 0 and 10,000.")
+    if "hwid_limit" in data and int(data["hwid_limit"] or 0) > 0:
+        raise ValueError("Stable device identity is not available for these protocols; use IP limits instead.")
     if data.get("reset_hwids"):
         row["hwids"] = ""
     if "enabled" in data:
@@ -1889,7 +1899,7 @@ def enforce():
             delta = current - row["ssh_last"] if current >= row["ssh_last"] else current
             used += max(delta, 0)
             row["ssh_last"] = current
-        if {"vless", "vmess"} & set(row["protocols"].split(",")):
+        if XRAY_USER_PROTOCOLS & set(row["protocols"].split(",")):
             up, down = xstats.get(row["username"], (0, 0))
             delta = (up - row["xray_up_last"] if up >= row["xray_up_last"] else up) \
                 + (down - row["xray_down_last"] if down >= row["xray_down_last"] else down)

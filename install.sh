@@ -514,8 +514,8 @@ def validate_settings(data):
                 raise ValueError(f"{key} must be a valid hostname or IP address.")
             clean[key] = value.strip().rstrip(".")
         elif key == "xray_path":
-            if not isinstance(value, str) or not value.startswith("/") or \\
-                    len(value) > 128 or not re.fullmatch(r"/[A-Za-z0-9/_-]*", value):
+            if (not isinstance(value, str) or not value.startswith("/") or
+                    len(value) > 128 or not re.fullmatch(r"/[A-Za-z0-9/_-]*", value)):
                 raise ValueError("xray_path must be a safe absolute URL path.")
             clean[key] = value
         elif key == "ovpn_proto":

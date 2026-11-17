@@ -1131,20 +1131,26 @@ def inbound_link(inbound, user, settings):
 # --------------------------------------------------------------------------
 
 def ovpn_create_user(username):
-    run_shell(
+    result = run_shell(
         f"cd {OVPN_DIR}/easy-rsa && EASYRSA_BATCH=1 ./easyrsa build-client-full "
         f"{username} nopass",
         timeout=120,
     )
+    if result.returncode != 0:
+        raise RuntimeError("OpenVPN client certificate creation failed: " +
+                           (result.stderr or result.stdout or "")[-800:])
 
 
 def ovpn_revoke_user(username):
-    run_shell(
+    result = run_shell(
         f"cd {OVPN_DIR}/easy-rsa && EASYRSA_BATCH=1 ./easyrsa revoke {username} && "
         f"EASYRSA_BATCH=1 ./easyrsa gen-crl && "
-        f"cp pki/crl.pem {OVPN_DIR}/crl.pem && systemctl restart openvpn-server@server || true",
+        f"cp pki/crl.pem {OVPN_DIR}/crl.pem && systemctl restart openvpn-server@server",
         timeout=120,
     )
+    if result.returncode != 0:
+        raise RuntimeError("OpenVPN certificate revocation failed: " +
+                           (result.stderr or result.stdout or "")[-800:])
 
 
 def ovpn_client_config(username, settings):
@@ -1471,6 +1477,7 @@ def update_user(user_id, data):
         raise ValueError("User not found.")
     row = dict(row)
     protocols = row["protocols"].split(",")
+    credential_once = None
     if "protocols" in data:
         new_protocols = [p for p in data.get("protocols") or []
                          if p in ("ssh", "vless", "vmess", "trojan",
@@ -1484,6 +1491,9 @@ def update_user(user_id, data):
                                 row["expire_date"])
             if "ovpn" in added:
                 ovpn_create_user(row["username"])
+            if ({"trojan", "shadowsocks"} & set(new_protocols)) and not row["password"]:
+                credential_once = secrets.token_urlsafe(12)
+                row["password"] = credential_once
             protocols = new_protocols
             row["protocols"] = ",".join(new_protocols)
     if "inbound_ids" in data:
@@ -1498,14 +1508,21 @@ def update_user(user_id, data):
             (today() + timedelta(days=days)).isoformat() if days > 0 else ""
         )
     if "password" in data and data["password"]:
-        row["password"] = data["password"]
+        new_password = data["password"]
+        if not isinstance(new_password, str) or not (8 <= len(new_password) <= 128) or any(
+                ch in new_password for ch in ("\\n", "\\r", "\\x00")):
+            raise ValueError("Credential must be 8-128 characters and contain no line breaks.")
         if "ssh" in protocols:
             proc = subprocess.run(
-                ["chpasswd"], input=f"{row['username']}:{row['password']}\n",
+                ["chpasswd"], input=f"{row['username']}:{new_password}\\n",
                 capture_output=True, text=True,
             ) if not MOCK else subprocess.CompletedProcess([], 0, "", "")
             if not MOCK and proc.returncode != 0:
                 raise RuntimeError("chpasswd failed.")
+        row["password"] = (new_password if ({"trojan", "shadowsocks"} & set(protocols))
+                           else "")
+        if {"trojan", "shadowsocks"} & set(protocols):
+            credential_once = new_password
     if "note" in data:
         row["note"] = data["note"]
     if "ip_limit" in data:
@@ -1536,7 +1553,12 @@ def update_user(user_id, data):
     fresh = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     xray_sync_users(list_users_as_rows())
-    return user_public(fresh, get_settings())
+    public = user_public(fresh, get_settings())
+    if credential_once:
+        public["credential_once"] = credential_once
+    audit_event("user.update", "user", user_id,
+                details={"username": row["username"], "protocols": protocols})
+    return public
 
 
 def apply_enabled_state(row):

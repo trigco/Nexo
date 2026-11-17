@@ -72,3 +72,21 @@
 ## Current status
 
 This branch contains the target architecture and delivery gates. It is not a v1 executable release yet. The repository has not been modified on main, no VPS deployment has been performed, and a VPS install test is still required.
+
+
+## Implemented in the current feature branch (not yet a release)
+
+- Persistent opaque session records stored as SHA-256 hashes, revocation, CSRF token validation, same-origin write checks, secure cookie attributes and login throttling.
+- Request JSON body size/type bounds and baseline response security headers.
+- SSH-only credential storage removal and one-time create/reset delivery. Existing legacy plaintext SSH credentials are not yet migrated/cleared automatically; an explicit customer reset campaign is still needed.
+- Packages: CRUD, user assignment and immutable applied policy snapshots.
+- Audit event persistence and an audit-log UI.
+- SSH upload/download accounting via per-UID conntrack marks; real VPS packet-path validation remains a release gate.
+- Xray user traffic aggregation covers VLESS, VMess, Trojan and Shadowsocks.
+- Strict inbound reference validation and occupied-port checks.
+- User provisioning compensation and safer revoke-before-delete sequencing.
+- OpenVPN profile entitlement checks and surfaced Easy-RSA command failures.
+- Installer pre-upgrade backup, preservation of existing admin credentials, TLS certificates and SSH policy files.
+- Installer/source synchronization CI tests.
+
+Still not implemented: multi-admin RBAC, privileged agent separation, a full outbound/routing workspace, OpenVPN live-session disconnect on quota lock, encrypted secret vault for Trojan/Shadowsocks, certificate ACME lifecycle, full migration of legacy cleartext credentials, and a disposable-VPS end-to-end release test.

@@ -302,6 +302,27 @@ class PersistenceAndSecurityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             panel.clean_inbound_ids({"inbound_ids": [999999]})
 
+    def test_openvpn_certificate_identity_is_unique_and_revoked_on_delete(self):
+        created = panel.create_user({
+            "username": "vpnuser", "protocols": ["ovpn"], "days": 30,
+        })
+        conn = panel.db()
+        row = conn.execute("SELECT * FROM users WHERE id=?", (created["id"],)).fetchone()
+        conn.close()
+        cert_name = row["ovpn_cert_name"]
+        self.assertTrue(cert_name.startswith("vpnuser-"))
+        with patch.object(panel, "ovpn_revoke_user") as revoke:
+            panel.delete_user(created["id"])
+            revoke.assert_called_once_with(cert_name)
+
+    def test_protocol_removal_is_rejected_until_revoke_flow_exists(self):
+        created = panel.create_user({
+            "username": "keepuser", "protocols": ["ssh"],
+            "password": "initial-secret-123",
+        })
+        with self.assertRaisesRegex(ValueError, "Protocol removal"):
+            panel.update_user(created["id"], {"protocols": ["vless"]})
+
     def test_user_input_rejects_unknown_protocol_and_negative_quota(self):
         with self.assertRaises(ValueError):
             panel.create_user({"username": "badproto", "protocols": ["ssh", "madeup"]})

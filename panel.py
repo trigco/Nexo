@@ -1125,8 +1125,10 @@ def user_public(row, settings, online_ips=None):
         info["1_direct"] = f"{host}:{settings['ssh_port']}"
         info["2_websocket"] = f"{host}:{settings['ws_port']}"
         info["3_ws_payload"] = (
-            f"GET / HTTP/1.1[crlf]Host: {host}[crlf]Upgrade: websocket"
-            "[crlf]Connection: Upgrade[crlf][crlf]"
+            f"GET / HTTP/1.1[crlf]Host: {host}[crlf]"
+            "Upgrade: websocket[crlf]Connection: Upgrade[crlf]"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]"
+            "Sec-WebSocket-Version: 13[crlf][crlf]"
         )
         info["4_websocket_tls"] = (
             f"{host}:{settings['wss_port']}  (SNI: {settings.get('sni_host', '')})"
@@ -1134,8 +1136,10 @@ def user_public(row, settings, online_ips=None):
         if cf_host:
             info["5_cloudflare_ws"] = f"{cf_host}:443"
             info["6_cf_payload"] = (
-                f"ACL / [split]HTTP/1.1 [lf]Host: {cf_host}[crlf]"
-                "Connection: [lf]Upgrade: Websocket[lf][lf]"
+                f"GET / HTTP/1.1[crlf]Host: {cf_host}[crlf]"
+                "Upgrade: websocket[crlf]Connection: Upgrade[crlf]"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]"
+                "Sec-WebSocket-Version: 13[crlf][crlf]"
             )
     seen_protocols = set()
     for inbound in list_inbounds():

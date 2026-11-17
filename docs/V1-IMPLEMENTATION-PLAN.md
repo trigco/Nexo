@@ -90,3 +90,6 @@ This branch contains the target architecture and delivery gates. It is not a v1 
 - Installer/source synchronization CI tests.
 
 Still not implemented: multi-admin RBAC, privileged agent separation, a full outbound/routing workspace, OpenVPN live-session disconnect on quota lock, encrypted secret vault for Trojan/Shadowsocks, certificate ACME lifecycle, full migration of legacy cleartext credentials, and a disposable-VPS end-to-end release test.
+
+
+- OpenVPN users now receive unique certificate common names; disabled/expired/quota-exhausted names are atomically published to a fail-closed client-connect hook. Existing active sessions are not yet killed at quota lock, and per-protocol removal remains blocked until a complete revoke workflow is implemented.

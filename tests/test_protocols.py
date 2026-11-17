@@ -92,6 +92,32 @@ class WebSocketTests(unittest.TestCase):
         client.close()
         server.close()
 
+
+    def test_fragmented_binary_message_is_forwarded_as_one_ssh_stream(self):
+        client, proxy_client = socket.socketpair()
+        upstream_peer, upstream = socket.socketpair()
+        errors = []
+
+        def relay():
+            try:
+                wsproxy.websocket_to_ssh(proxy_client, upstream, threading.Lock())
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=relay)
+        thread.start()
+        client.sendall(masked_frame(b"SSH-2.0-", fin=False))
+        client.sendall(masked_frame(b"OpenSSH-test", opcode=0, fin=True, mask=b"efgh"))
+        client.sendall(masked_frame(b"", opcode=8, fin=True))
+        received = upstream_peer.recv(128)
+        thread.join(timeout=2)
+        self.assertFalse(errors)
+        self.assertEqual(received, b"SSH-2.0-OpenSSH-test")
+        client.close()
+        proxy_client.close()
+        upstream_peer.close()
+        upstream.close()
+
     def test_rejects_missing_upgrade(self):
         client, server = socket.socketpair()
         errors = []
@@ -195,6 +221,25 @@ class PersistenceAndSecurityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             panel.create_user({"username": "badquota", "protocols": ["ssh"],
                                "quota_gb": -1})
+
+
+    def test_manual_lock_is_not_undone_by_quota_enforcer(self):
+        conn = panel.db()
+        conn.execute(
+            "INSERT INTO users (username, password, protocols, uuid, quota_bytes, "
+            "used_bytes, expire_date, enabled, created_at, auto_locked) "
+            "VALUES (?, '', 'ssh', '', 0, 0, '', 0, '', 0)",
+            ("manual-lock",),
+        )
+        conn.commit()
+        conn.close()
+        panel.enforce()
+        conn = panel.db()
+        row = conn.execute("SELECT enabled, auto_locked FROM users WHERE username=?",
+                           ("manual-lock",)).fetchone()
+        conn.close()
+        self.assertEqual(row["enabled"], 0)
+        self.assertEqual(row["auto_locked"], 0)
 
     def test_sessions_are_persisted_as_hashes(self):
         token = "raw-session-token"

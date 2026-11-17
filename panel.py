@@ -443,11 +443,45 @@ def xray_load():
 
 
 def xray_save(config):
+    """Validate, atomically publish and health-check an Xray config.
+
+    A bad candidate must never replace the last-known-good file. If restart
+    fails after publication, restore the previous config and restart again.
+    """
     if MOCK:
         return
-    with open(XRAY_CONFIG, "w") as fh:
-        json.dump(config, fh, indent=2)
-    run(["systemctl", "restart", "xray"])
+    import tempfile
+
+    config_dir = os.path.dirname(XRAY_CONFIG)
+    os.makedirs(config_dir, exist_ok=True)
+    fd, candidate = tempfile.mkstemp(prefix=".nexo-xray-", suffix=".json",
+                                     dir=config_dir)
+    backup = XRAY_CONFIG + ".nexo-last-good"
+    had_previous = os.path.isfile(XRAY_CONFIG)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(config, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        test = run(["xray", "run", "-test", "-config", candidate], timeout=30)
+        if test.returncode != 0:
+            detail = (test.stderr or test.stdout or "unknown Xray config error").strip()
+            raise RuntimeError("Xray rejected generated config: " + detail[-1600:])
+        if had_previous:
+            shutil.copy2(XRAY_CONFIG, backup)
+        os.replace(candidate, XRAY_CONFIG)
+        restart = run(["systemctl", "restart", "xray"], timeout=45)
+        if restart.returncode != 0 or not service_active("xray"):
+            detail = (restart.stderr or restart.stdout or "Xray service is not active").strip()
+            if had_previous and os.path.exists(backup):
+                shutil.copy2(backup, candidate)
+                os.replace(candidate, XRAY_CONFIG)
+                run(["systemctl", "restart", "xray"], timeout=45)
+            raise RuntimeError("Xray failed after config publish; previous config restored: "
+                               + detail[-1200:])
+    finally:
+        if os.path.exists(candidate):
+            os.unlink(candidate)
 
 
 INBOUND_PROTOCOLS = ("vless", "vmess", "trojan", "shadowsocks")

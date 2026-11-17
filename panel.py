@@ -1376,22 +1376,52 @@ def create_user(data):
         "INSERT INTO users (username, password, protocols, uuid, quota_bytes, "
         "expire_date, created_at, note, ip_limit, hwid_limit, inbound_ids) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (username, password, ",".join(protocols), str(uuidlib.uuid4()),
+        (username, password if ({"trojan", "shadowsocks"} & set(protocols)) else "",
+         ",".join(protocols), str(uuidlib.uuid4()),
          quota, expire, datetime.now().isoformat(timespec="seconds"),
          note, ip_limit, hwid_limit, inbound_ids),
     )
     user_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    if "ssh" in protocols:
-        ssh_create_user(username, password, expire)
-    if "ovpn" in protocols:
-        ovpn_create_user(username)
+    ssh_created = False
+    ovpn_created = False
+    try:
+        if "ssh" in protocols:
+            ssh_create_user(username, password, expire)
+            ssh_created = True
+        if "ovpn" in protocols:
+            ovpn_create_user(username)
+            ovpn_created = True
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        # Compensate external resources in reverse order. Keep the original
+        # failure visible; cleanup is best-effort and never hides it.
+        if ovpn_created:
+            try:
+                ovpn_revoke_user(username)
+            except Exception:
+                pass
+        if ssh_created:
+            try:
+                ssh_delete_user(username)
+            except Exception:
+                pass
+        cleanup = db()
+        cleanup.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        cleanup.commit()
+        cleanup.close()
+        try:
+            xray_sync_users(list_users_as_rows())
+        except Exception:
+            pass
+        raise
     settings = get_settings()
     conn = db()
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    audit_event("user.create", "user", user_id,
+                details={"username": username, "protocols": protocols})
     public = user_public(row, settings)
     # The initial SSH/Trojan/SS credentials are delivered once by the create
     # response. They are never included in subsequent list/detail responses.
@@ -1708,15 +1738,26 @@ def delete_user(user_id):
         conn.close()
         raise ValueError("User not found.")
     row = dict(row)
+    protocols = row["protocols"].split(",")
+    # Remove the client from Xray before deleting the durable control-plane row.
+    conn.execute("UPDATE users SET enabled=0, auto_locked=0 WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    try:
+        xray_sync_users(list_users_as_rows())
+        if "ssh" in protocols and ssh_user_exists(row["username"]):
+            ssh_delete_user(row["username"])
+        if "ovpn" in protocols:
+            ovpn_revoke_user(row["username"])
+    except Exception:
+        # Keep the record present but disabled so an operator can repair cleanup.
+        raise
+    conn = db()
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
-    protocols = row["protocols"].split(",")
-    if "ssh" in protocols and ssh_user_exists(row["username"]):
-        ssh_delete_user(row["username"])
-    if "ovpn" in protocols:
-        ovpn_revoke_user(row["username"])
-    xray_sync_users(list_users_as_rows())
+    audit_event("user.delete", "user", user_id,
+                details={"username": row["username"], "protocols": protocols})
 
 
 def enforce():

@@ -2817,8 +2817,18 @@ function fmtBytes(b){ b = Number(b)||0; const u=["B","KB","MB","GB","TB"]; let i
 function fmtSpeed(b){ return fmtBytes(b)+"/s"; }
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show");
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2600); }
+function readCookie(name){
+  const part = document.cookie.split(";").map(x=>x.trim()).find(x=>x.startsWith(name+"="));
+  return part ? decodeURIComponent(part.slice(name.length+1)) : "";
+}
 async function api(path, options={}){
-  const res = await fetch(path, {headers:{"Content-Type":"application/json"}, ...options});
+  const method = (options.method || "GET").toUpperCase();
+  const headers = {"Content-Type":"application/json", ...(options.headers||{})};
+  if(method!=="GET" && path!=="/api/login"){
+    const csrf = readCookie("mpanel_csrf");
+    if(csrf) headers["X-CSRF-Token"] = csrf;
+  }
+  const res = await fetch(path, {...options, method, headers, credentials:"same-origin"});
   const data = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(data.error || ("HTTP "+res.status));
   return data;
@@ -3247,9 +3257,15 @@ $("#userForm").addEventListener("submit", async e => {
     payload.inbound_ids = (boxes.length && checked.length === boxes.length) ? [] : checked;
   }
   try{
-    await api(id ? "/api/users/"+id : "/api/users",
+    const result = await api(id ? "/api/users/"+id : "/api/users",
       {method:"POST", body: JSON.stringify(payload)});
     $("#userModalWrap").style.display = "none";
+    if(!id && result.user && result.user.credential_once){
+      const secret = result.user.credential_once;
+      delete result.user.credential_once;
+      alert("One-time credential for " + result.user.username + ":\\n\\n" + secret +
+        "\\n\\nCopy it now. It will not be shown again.");
+    }
     toast(id ? "User updated." : "User created."); loadUsers(); loadDashboard();
   }catch(err){ toast(err.message); }
 });
@@ -3270,7 +3286,7 @@ window.showInfo = id => {
   $("#infoTitle").textContent = "User info — " + u.username;
   const kv = (k,v,copy) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v mono">${esc(v)}</div>${copy?`<button class="copy" data-copy="${esc(v)}">Copy</button>`:""}</div>`;
   let accountHtml = '<div class="info-sec"><h4>Account</h4>'
-    + kv("Username", u.username, true) + kv("Password", u.password, true)
+    + kv("Username", u.username, true)
     + (u.uuid ? kv("UUID", u.uuid, true) : "")
     + kv("Expires", u.expire_date || "Never") + kv("Traffic", fmtBytes(u.used_bytes) + " / " + (u.quota_bytes?fmtBytes(u.quota_bytes):"Unlimited"))
     + kv("IP limit", u.ip_limit ? u.ip_limit+" IPs" : "Unlimited")

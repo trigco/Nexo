@@ -2384,11 +2384,29 @@ def service_action(service_id, action):
     allowed = {sid for sid, _, _ in SERVICES}
     if service_id not in allowed or action not in ("start", "stop", "restart"):
         raise ValueError("Unknown service or action.")
-    if service_id == "mpanel" and action in ("stop",):
-        raise ValueError("The panel cannot stop itself from the panel.")
-    run(["systemctl", action, service_id], check=True)
-    audit_event("service." + action, "service", service_id)
-    return True
+    if service_id == "mpanel":
+        raise ValueError("The panel service cannot be controlled from its own web session.")
+    result = run(["systemctl", action, service_id], timeout=30)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "systemctl failed").strip()
+        raise RuntimeError(f"Could not {action} {service_id}: {detail[-800:]}")
+    # systemctl returning zero only confirms that the job was queued/completed;
+    # verify the resulting state before reporting success to the UI.
+    expected_active = action in ("start", "restart")
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        if service_active(service_id) == expected_active:
+            audit_event("service." + action, "service", service_id)
+            return {"ok": True, "active": expected_active}
+        time.sleep(0.4)
+    state = "active" if service_active(service_id) else "inactive"
+    journal = run(["journalctl", "-u", service_id, "-n", "12", "--no-pager"],
+                  timeout=10)
+    detail = (journal.stdout or journal.stderr or "").strip()
+    raise RuntimeError(
+        f"{service_id} did not become { 'active' if expected_active else 'inactive' } "
+        f"within 12 seconds (current state: {state}). " + detail[-1200:]
+    )
 
 
 # --------------------------------------------------------------------------

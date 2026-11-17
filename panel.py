@@ -1331,6 +1331,9 @@ def user_public(row, settings, online_ips=None):
     data = {
         "id": row["id"],
         "username": row["username"],
+        "package_id": row["package_id"] if "package_id" in row.keys() else None,
+        "package_snapshot": json.loads(row["package_snapshot_json"] or "{}")
+        if "package_snapshot_json" in row.keys() else {},
         "protocols": protocols,
         "uuid": row["uuid"],
         "ip_limit": row["ip_limit"] if "ip_limit" in row.keys() else 0,
@@ -1762,8 +1765,36 @@ def update_user(user_id, data):
         conn.close()
         raise ValueError("User not found.")
     row = dict(row)
+    data = dict(data)
     protocols = row["protocols"].split(",")
     credential_once = None
+    package_id = row.get("package_id")
+    package_data = json.loads(row.get("package_snapshot_json") or "{}")
+    if "package_id" in data:
+        if data["package_id"] in (None, ""):
+            package_id = None
+            package_data = {}
+        else:
+            try:
+                package_id = int(data["package_id"])
+            except (TypeError, ValueError):
+                raise ValueError("Invalid package selection.")
+            conn_pkg = db()
+            package_row = conn_pkg.execute(
+                "SELECT * FROM packages WHERE id=? AND enabled=1", (package_id,)
+            ).fetchone()
+            conn_pkg.close()
+            if not package_row:
+                raise ValueError("Selected package does not exist or is disabled.")
+            package_data = package_snapshot(package_row)
+            data.update({
+                "protocols": package_data["protocols"],
+                "quota_gb": package_data["quota_bytes"] / GB if package_data["quota_bytes"] else 0,
+                "days": package_data["validity_days"],
+                "ip_limit": package_data["ip_limit"],
+                "hwid_limit": 0,
+                "inbound_ids": package_data["inbound_ids"],
+            })
     if "protocols" in data:
         new_protocols = data.get("protocols")
         allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
@@ -1840,12 +1871,14 @@ def update_user(user_id, data):
     conn.execute(
         "UPDATE users SET quota_bytes = ?, expire_date = ?, password = ?, "
         "note = ?, enabled = ?, ip_limit = ?, hwid_limit = ?, hwids = ?, "
-        "protocols = ?, auto_locked = ?, inbound_ids = ? WHERE id = ?",
+        "protocols = ?, auto_locked = ?, inbound_ids = ?, package_id = ?, "
+        "package_snapshot_json = ? WHERE id = ?",
         (row["quota_bytes"], row["expire_date"], row["password"],
          row["note"], row["enabled"], row["ip_limit"], row["hwid_limit"],
          row["hwids"], row["protocols"],
          row["auto_locked"] if "auto_locked" in row else 0,
-         row["inbound_ids"] if "inbound_ids" in row else "", user_id),
+         row["inbound_ids"] if "inbound_ids" in row else "", package_id,
+         json.dumps(package_data), user_id),
     )
     if "ssh" in protocols and "days" in data:
         run(["chage", "-E", row["expire_date"] or "-1", row["username"]])

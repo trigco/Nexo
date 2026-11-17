@@ -5079,7 +5079,7 @@ Type=simple
 # Keep systemd-resolved's loopback stub on UDP/53 intact. Redirect only
 # inbound DNS packets arriving from the network to the unprivileged port.
 ExecStartPre=/bin/bash -c 'iptables -w -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || iptables -w -t nat -I PREROUTING 1 -p udp --dport 53 -j REDIRECT --to-ports 5300'
-ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/dnstt/server.key ${DNSTT_DOMAIN_DEFAULT} 127.0.0.1:22
+ExecStart=/bin/bash -c 'exec /usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/dnstt/server.key "$(cat /etc/dnstt/domain)" 127.0.0.1:22'
 ExecStopPost=/bin/bash -c 'iptables -w -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null || true'
 Restart=on-failure
 RestartSec=3

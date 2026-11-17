@@ -348,6 +348,8 @@ class PersistenceAndSecurityTests(unittest.TestCase):
             panel.validate_settings({"xray_path": "/ok\\r\\nInjected: yes"})
         with self.assertRaises(ValueError):
             panel.validate_settings({"unknown": "value"})
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            panel.validate_settings({"ssh_port": 2222})
 
     def test_user_input_rejects_unknown_protocol_and_negative_quota(self):
         with self.assertRaises(ValueError):

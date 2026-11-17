@@ -3714,7 +3714,7 @@ $("#packageForm").addEventListener("submit", async e => {
     await api(id ? "/api/packages/"+id : "/api/packages", {method:"POST", body:JSON.stringify({
       name:$("#pkName").value.trim(), quota_gb:Number($("#pkQuota").value||0),
       validity_days:Number($("#pkDays").value||0), ip_limit:Number($("#pkIp").value||0),
-      protocols, inbound_ids:[]
+      protocols
     })});
     $("#packageForm").reset(); $("#pkId").value = "";
     $("#packageFormTitle").textContent = "Create service package";

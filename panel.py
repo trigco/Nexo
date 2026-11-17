@@ -3898,6 +3898,7 @@ window.showInfo = id => {
   const kv = (k,v,copy) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v mono">${esc(v)}</div>${copy?`<button class="copy" data-copy="${esc(v)}">Copy</button>`:""}</div>`;
   let accountHtml = '<div class="info-sec"><h4>Account</h4>'
     + kv("Username", u.username, true)
+    + kv("Package", (u.package_snapshot && u.package_snapshot.name) || "Custom")
     + (u.uuid ? kv("UUID", u.uuid, true) : "")
     + kv("Expires", u.expire_date || "Never") + kv("Traffic", fmtBytes(u.used_bytes) + " / " + (u.quota_bytes?fmtBytes(u.quota_bytes):"Unlimited"))
     + kv("IP limit", u.ip_limit ? u.ip_limit+" IPs" : "Unlimited")

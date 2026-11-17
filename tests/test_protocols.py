@@ -289,8 +289,8 @@ class PersistenceAndSecurityTests(unittest.TestCase):
 
     def test_ssh_traffic_counter_sums_only_upload_and_download_return_rules(self):
         outputs = [
-            "Chain out (1 references)\\n pkts bytes target\\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
-            "Chain in (1 references)\\n pkts bytes target\\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
+            "Chain out (1 references)\n pkts bytes target\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
+            "Chain in (1 references)\n pkts bytes target\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
         ]
         completed = [
             panel.subprocess.CompletedProcess([], 0, outputs[0], ""),

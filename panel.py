@@ -1313,7 +1313,7 @@ def write_ovpn_access_list(rows=None):
     try:
         with os.fdopen(fd, "w") as fh:
             if denied:
-                fh.write("\\n".join(denied) + "\\n")
+                fh.write("\n".join(denied) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
         os.chmod(temp_path, 0o644)

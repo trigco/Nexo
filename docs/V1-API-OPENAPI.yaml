@@ -1,0 +1,337 @@
+openapi: 3.1.0
+info:
+  title: Nexo Control Plane API
+  version: 1.0.0
+  description: Versioned API contract for Nexo VPS administration. The routes are a target contract and are not all implemented in the current legacy panel.
+servers:
+  - url: https://{host}/api/v1
+    variables:
+      host:
+        default: panel.example.com
+security:
+  - sessionCookie: []
+paths:
+  /health/live:
+    get:
+      security: []
+      summary: Process liveness
+      responses:
+        '200':
+          description: API process is alive
+  /health/ready:
+    get:
+      security: []
+      summary: Dependency readiness
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: A required dependency is unavailable
+  /auth/login:
+    post:
+      security: []
+      summary: Authenticate administrator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string, minLength: 1, maxLength: 64}
+                password: {type: string, minLength: 1, maxLength: 256}
+      responses:
+        '200': {description: Authenticated; session cookie set}
+        '401': {description: Invalid credentials}
+        '429': {description: Rate limit exceeded}
+  /auth/logout:
+    post:
+      summary: Revoke current session
+      responses:
+        '204': {description: Session revoked}
+  /auth/session:
+    get:
+      summary: Get current principal and CSRF token
+      responses:
+        '200': {description: Current session}
+  /auth/password:
+    post:
+      summary: Rotate current admin password
+      responses:
+        '204': {description: Password changed; sessions rotated}
+  /servers:
+    get:
+      summary: List managed VPS nodes
+      responses:
+        '200': {description: Server inventory}
+    post:
+      summary: Register a node
+      responses:
+        '201': {description: Node registered}
+  /servers/{serverId}:
+    parameters:
+      - $ref: '#/components/parameters/serverId'
+    get:
+      summary: Get node health and capabilities
+      responses:
+        '200': {description: Node}
+    patch:
+      summary: Update node metadata
+      responses:
+        '200': {description: Updated node}
+  /users:
+    get:
+      summary: Search and list users
+      parameters:
+        - in: query
+          name: q
+          schema: {type: string, maxLength: 120}
+        - in: query
+          name: status
+          schema: {type: string, enum: [active, suspended, expired, quota_exhausted, revoked]}
+        - in: query
+          name: serverId
+          schema: {type: string, format: uuid}
+      responses:
+        '200': {description: Paginated users}
+    post:
+      summary: Provision a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProvision'
+      responses:
+        '201': {description: User provisioned}
+        '422': {description: Invalid entitlement or capacity}
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    get:
+      summary: Get user details and protocol provisioning status
+      responses:
+        '200': {description: User detail}
+    patch:
+      summary: Update user metadata and entitlements
+      responses:
+        '200': {description: Updated user}
+    delete:
+      summary: Revoke and delete user access
+      responses:
+        '204': {description: User revoked}
+  /users/{userId}/renew:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    post:
+      summary: Renew validity and optionally reset usage
+      responses:
+        '200': {description: Renewed user}
+  /users/{userId}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    post:
+      summary: Manually suspend access
+      responses:
+        '200': {description: Suspended}
+  /users/{userId}/resume:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    post:
+      summary: Resume access after policy validation
+      responses:
+        '200': {description: Resumed}
+  /packages:
+    get:
+      summary: List service packages
+      responses:
+        '200': {description: Packages}
+    post:
+      summary: Create package
+      responses:
+        '201': {description: Package created}
+  /packages/{packageId}:
+    parameters:
+      - name: packageId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      summary: Get package
+      responses:
+        '200': {description: Package}
+    patch:
+      summary: Update package for future assignments
+      responses:
+        '200': {description: Package updated}
+    delete:
+      summary: Disable package
+      responses:
+        '204': {description: Package disabled}
+  /inbounds:
+    get:
+      summary: List Xray inbounds and runtime state
+      responses:
+        '200': {description: Inbounds}
+    post:
+      summary: Create inbound with validated config preview
+      responses:
+        '201': {description: Inbound created}
+  /inbounds/{inboundId}:
+    parameters:
+      - name: inboundId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      summary: Get inbound
+      responses:
+        '200': {description: Inbound}
+    patch:
+      summary: Update inbound
+      responses:
+        '200': {description: Updated inbound}
+    delete:
+      summary: Delete inbound after dependency check
+      responses:
+        '204': {description: Deleted}
+  /outbounds:
+    get:
+      summary: List outbounds
+      responses:
+        '200': {description: Outbounds}
+    post:
+      summary: Create outbound
+      responses:
+        '201': {description: Outbound created}
+  /outbounds/{outboundId}:
+    parameters:
+      - name: outboundId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      summary: Update outbound
+      responses:
+        '200': {description: Updated outbound}
+    delete:
+      summary: Delete outbound after routing dependency check
+      responses:
+        '204': {description: Deleted}
+  /routing-rules:
+    get:
+      summary: List routing rules ordered by priority
+      responses:
+        '200': {description: Rules}
+    post:
+      summary: Add routing rule
+      responses:
+        '201': {description: Rule added}
+  /traffic/summary:
+    get:
+      summary: Traffic totals by protocol, user and interval
+      responses:
+        '200': {description: Traffic summary}
+  /traffic/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    get:
+      summary: User traffic samples and quota state
+      responses:
+        '200': {description: Traffic series}
+  /traffic/users/{userId}/reset:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    post:
+      summary: Reset usage counters with audit record
+      responses:
+        '204': {description: Reset completed}
+  /services:
+    get:
+      summary: Service install, state and health
+      responses:
+        '200': {description: Services}
+  /services/{serviceId}/actions:
+    parameters:
+      - name: serviceId
+        in: path
+        required: true
+        schema: {type: string, maxLength: 80}
+    post:
+      summary: Run allowlisted system service action
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: {type: string, enum: [start, stop, restart, reload]}
+      responses:
+        '202': {description: Action accepted}
+        '422': {description: Unsupported action or unhealthy service}
+  /openvpn/clients:
+    get:
+      summary: List OpenVPN certificates
+      responses:
+        '200': {description: OpenVPN clients}
+    post:
+      summary: Issue an OpenVPN client certificate
+      responses:
+        '201': {description: Certificate issued}
+  /openvpn/clients/{clientId}/revoke:
+    parameters:
+      - name: clientId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      summary: Revoke certificate and publish CRL
+      responses:
+        '200': {description: Certificate revoked}
+  /audit-events:
+    get:
+      summary: Query administrator and node audit events
+      responses:
+        '200': {description: Audit events}
+  /settings/branding:
+    get:
+      summary: Read branding preferences
+      responses:
+        '200': {description: Branding}
+    patch:
+      summary: Update public branding preferences
+      responses:
+        '200': {description: Updated branding}
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: nexo_session
+  parameters:
+    serverId:
+      name: serverId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    userId:
+      name: userId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  schemas:
+    UserProvision:
+      type: object
+      required: [username, serverId, packageId]
+      properties:
+        username: {type: string, pattern: '^[a-z][a-z0-9_-]{2,31}$'}
+        serverId: {type: string, format: uuid}
+        packageId: {type: string, format: uuid}
+        note: {type: string, maxLength: 500}
+        inboundIds:
+          type: array
+          uniqueItems: true
+          items: {type: string, format: uuid}

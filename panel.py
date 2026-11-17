@@ -20,6 +20,7 @@ Set PANEL_MOCK=1 to run without touching the system (development and tests).
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import uuid as uuidlib
 from datetime import date, datetime, timedelta
@@ -69,7 +71,10 @@ DEFAULT_SETTINGS = {
 }
 
 _lock = threading.Lock()
-_sessions = {}
+LOGIN_WINDOW_SECONDS = 900
+LOGIN_MAX_FAILURES = 8
+SESSION_TTL_SECONDS = 7 * 86400
+MAX_REQUEST_BODY = 1024 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -154,14 +159,17 @@ def fmt_bytes(n):
 # --------------------------------------------------------------------------
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 15000")
     return conn
 
 
 def init_db():
     os.makedirs(BASE, exist_ok=True)
     conn = db()
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS admin (
@@ -172,6 +180,43 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            csrf_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            revoked_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            source_key TEXT PRIMARY KEY,
+            failures INTEGER NOT NULL DEFAULT 0,
+            window_started INTEGER NOT NULL,
+            locked_until INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor TEXT NOT NULL DEFAULT 'admin',
+            action TEXT NOT NULL,
+            target_type TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            request_id TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT 'success',
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS packages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            quota_bytes INTEGER NOT NULL DEFAULT 0,
+            validity_days INTEGER NOT NULL DEFAULT 30,
+            ip_limit INTEGER NOT NULL DEFAULT 0,
+            protocols_json TEXT NOT NULL DEFAULT '["ssh"]',
+            inbound_ids_json TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,6 +275,13 @@ def init_db():
     if "inbound_ids" not in columns:
         conn.execute(
             "ALTER TABLE users ADD COLUMN inbound_ids TEXT NOT NULL DEFAULT ''")
+    if "package_id" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN package_id INTEGER")
+    if "package_snapshot_json" not in columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN package_snapshot_json TEXT NOT NULL DEFAULT '{}'")
+    if "ovpn_cert_name" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN ovpn_cert_name TEXT NOT NULL DEFAULT ''")
     # No inbounds are seeded: the admin creates exactly the inbounds they
     # want (older versions auto-created two defaults, which looked like
     # fake/pre-opened entries in the panel).
@@ -245,8 +297,97 @@ def init_db():
         )
         print(f"Admin created: user 'admin', password '{initial}'", flush=True)
         print("Change it after first login (Settings) or with --set-admin.", flush=True)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at)")
     conn.commit()
     conn.close()
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError:
+        pass
+
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def audit_event(action, target_type="", target_id="", request_id="",
+                outcome="success", details=None):
+    conn = db()
+    conn.execute(
+        "INSERT INTO audit_events (actor, action, target_type, target_id, "
+        "request_id, outcome, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("admin", action, target_type, str(target_id or ""), request_id, outcome,
+         json.dumps(details or {}, separators=(",", ":")),
+         datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def login_lock_state(source_key):
+    now = int(time.time())
+    conn = db()
+    row = conn.execute(
+        "SELECT failures, window_started, locked_until FROM login_attempts WHERE source_key=?",
+        (source_key,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return False, 0
+    return int(row["locked_until"]) > now, max(0, int(row["locked_until"]) - now)
+
+
+def record_login_failure(source_key):
+    now = int(time.time())
+    conn = db()
+    row = conn.execute(
+        "SELECT failures, window_started FROM login_attempts WHERE source_key=?",
+        (source_key,),
+    ).fetchone()
+    if not row or now - int(row["window_started"]) > LOGIN_WINDOW_SECONDS:
+        failures, started = 1, now
+    else:
+        failures, started = int(row["failures"]) + 1, int(row["window_started"])
+    locked_until = 0
+    if failures >= LOGIN_MAX_FAILURES:
+        locked_until = now + min(900, 30 * (2 ** min(max(failures - LOGIN_MAX_FAILURES, 0), 5)))
+    conn.execute(
+        "INSERT INTO login_attempts (source_key, failures, window_started, locked_until) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT(source_key) DO UPDATE SET "
+        "failures=excluded.failures, window_started=excluded.window_started, "
+        "locked_until=excluded.locked_until",
+        (source_key, failures, started, locked_until),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_login_failures(source_key):
+    conn = db()
+    conn.execute("DELETE FROM login_attempts WHERE source_key=?", (source_key,))
+    conn.commit()
+    conn.close()
+
+
+def list_audit_events(limit=200):
+    limit = max(1, min(int(limit), 500))
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, actor, action, target_type, target_id, request_id, outcome, "
+        "details_json, created_at FROM audit_events ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    events = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except (ValueError, TypeError):
+            item["details"] = {}
+        events.append(item)
+    return events
 
 
 def get_settings():
@@ -256,6 +397,81 @@ def get_settings():
     settings = dict(DEFAULT_SETTINGS)
     settings.update({row["key"]: row["value"] for row in rows})
     return settings
+
+
+def _valid_host(value, allow_empty=False):
+    if not isinstance(value, str):
+        return False
+    value = value.strip().rstrip(".")
+    if not value:
+        return allow_empty
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        pass
+    if len(value) > 253 or not re.fullmatch(r"[A-Za-z0-9.-]+", value):
+        return False
+    labels = value.split(".")
+    return all(1 <= len(label) <= 63 and
+               not label.startswith("-") and not label.endswith("-")
+               for label in labels)
+
+
+def validate_settings(data):
+    if not isinstance(data, dict):
+        raise ValueError("Settings payload must be an object.")
+    unknown = set(data) - set(DEFAULT_SETTINGS)
+    if unknown:
+        raise ValueError("Unknown setting key: " + ", ".join(sorted(unknown)))
+    clean = {}
+    current_settings = get_settings()
+    service_managed_ports = {
+        "ssh_port", "ws_port", "wss_port", "xray_port",
+        "xray_vmess_port", "ovpn_port", "dnstt_port",
+    }
+    port_keys = {
+        "panel_port", "ssh_port", "ws_port", "wss_port", "xray_port",
+        "xray_vmess_port", "ovpn_port", "dnstt_port",
+    }
+    host_keys = {"server_host", "cf_ws_host", "sni_host", "dnstt_domain"}
+    for key, value in data.items():
+        if key in port_keys:
+            if key in service_managed_ports and str(value) != str(current_settings.get(key, "")):
+                raise ValueError(
+                    f"{key} is read-only until its service configuration is managed by Nexo.")
+            if isinstance(value, bool):
+                raise ValueError(f"{key} must be a valid TCP/UDP port.")
+            try:
+                port = int(value)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(f"{key} must be a valid TCP/UDP port.")
+            if not 1 <= port <= 65535:
+                raise ValueError(f"{key} must be between 1 and 65535.")
+            clean[key] = str(port)
+        elif key in host_keys:
+            if not _valid_host(value, allow_empty=(key in {"server_host", "dnstt_domain"})):
+                raise ValueError(f"{key} must be a valid hostname or IP address.")
+            clean[key] = value.strip().rstrip(".")
+        elif key == "xray_path":
+            if (not isinstance(value, str) or not value.startswith("/") or
+                    len(value) > 128 or not re.fullmatch(r"/[A-Za-z0-9/_-]*", value)):
+                raise ValueError("xray_path must be a safe absolute URL path.")
+            clean[key] = value
+        elif key == "ovpn_proto":
+            if value != "udp":
+                raise ValueError("OpenVPN transport is currently fixed to UDP by the installed service.")
+            clean[key] = value
+        elif key == "brand":
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9 _-]{2,32}", value):
+                raise ValueError("brand must be 2-32 safe characters.")
+            clean[key] = value.strip()
+        elif key == "telegram":
+            if not isinstance(value, str) or not re.fullmatch(
+                    r"https://t\.me/[A-Za-z0-9_/?=-]{1,120}", value):
+                raise ValueError("telegram must be an HTTPS t.me link.")
+            clean[key] = value
+    return clean
 
 
 def set_setting(key, value):
@@ -356,7 +572,25 @@ USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 
 
 def chain_name(username):
-    return f"MP_{username}"[:28]
+    suffix = hashlib.sha256(username.encode()).hexdigest()[:6]
+    return f"MP_{username[:18]}_{suffix}"[:28]
+
+
+def chain_in_name(username):
+    suffix = hashlib.sha256(username.encode()).hexdigest()[:6]
+    return f"MI_{username[:18]}_{suffix}"[:28]
+
+
+def ssh_mark(username):
+    if MOCK:
+        return 0x4E000001
+    result = run(["id", "-u", username], timeout=5)
+    if result.returncode != 0 or not result.stdout.strip().isdigit():
+        raise RuntimeError(f"Unable to resolve Linux UID for {username}.")
+    uid = int(result.stdout.strip())
+    if uid <= 0 or uid > 0x00FFFFFF:
+        raise RuntimeError("Linux UID is outside the supported accounting mark range.")
+    return 0x4E000000 | uid
 
 
 def ssh_create_user(username, password, expire_date):
@@ -366,6 +600,7 @@ def ssh_create_user(username, password, expire_date):
         capture_output=True, text=True,
     ) if not MOCK else subprocess.CompletedProcess([], 0, "", "")
     if not MOCK and proc.returncode != 0:
+        run(["userdel", "-r", username])
         raise RuntimeError(f"chpasswd failed: {proc.stderr.strip()}")
     if expire_date:
         run(["chage", "-E", expire_date, username], check=True)
@@ -373,26 +608,68 @@ def ssh_create_user(username, password, expire_date):
 
 
 def ssh_ensure_chain(username):
-    chain = chain_name(username)
-    run(["iptables", "-N", chain])
-    run(["iptables", "-F", chain])
-    run(["iptables", "-A", chain, "-m", "owner", "--uid-owner", username, "-j", "RETURN"])
-    # Single jump from OUTPUT; remove duplicates first.
-    while run(["iptables", "-D", "OUTPUT", "-j", chain]).returncode == 0 and not MOCK:
-        pass
-    run(["iptables", "-A", "OUTPUT", "-j", chain])
+    """Account both directions of user-owned connections in the mangle table.
+
+    The first OUTPUT rule stamps conntrack with a reserved per-UID mark.
+    RETURN rules count upload and matching reply/download bytes. We read only
+    RETURN counters, avoiding double-counting the mark-setting rule.
+    """
+    mark = ssh_mark(username)
+    out_chain, in_chain = chain_name(username), chain_in_name(username)
+    # Remove legacy filter-table chains created by older panel versions.
+    legacy = f"MP_{username}"[:28]
+    if not MOCK:
+        while run(["iptables", "-D", "OUTPUT", "-j", legacy]).returncode == 0:
+            pass
+        run(["iptables", "-F", legacy])
+        run(["iptables", "-X", legacy])
+    run(["iptables", "-t", "mangle", "-N", out_chain])
+    run(["iptables", "-t", "mangle", "-F", out_chain])
+    run(["iptables", "-t", "mangle", "-N", in_chain])
+    run(["iptables", "-t", "mangle", "-F", in_chain])
+    run(["iptables", "-t", "mangle", "-A", out_chain, "-m", "owner",
+         "--uid-owner", username, "-j", "CONNMARK", "--set-mark", str(mark)])
+    run(["iptables", "-t", "mangle", "-A", out_chain, "-m", "connmark",
+         "--mark", str(mark), "-j", "RETURN"])
+    run(["iptables", "-t", "mangle", "-A", in_chain, "-m", "connmark",
+         "--mark", str(mark), "-j", "RETURN"])
+    if not MOCK:
+        while run(["iptables", "-t", "mangle", "-D", "OUTPUT", "-j", out_chain]).returncode == 0:
+            pass
+        while run(["iptables", "-t", "mangle", "-D", "INPUT", "-j", in_chain]).returncode == 0:
+            pass
+    run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-j", out_chain])
+    run(["iptables", "-t", "mangle", "-A", "INPUT", "-j", in_chain])
 
 
 def ssh_chain_bytes(username):
     if MOCK:
         return 0
-    result = run(["iptables", "-L", chain_name(username), "-v", "-x", "-n"])
     total = 0
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0].isdigit():
-            total += int(fields[1])
+    for chain in (chain_name(username), chain_in_name(username)):
+        result = run(["iptables", "-t", "mangle", "-L", chain, "-v", "-x", "-n"])
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            # iptables -L columns: pkts bytes target ...
+            if len(fields) >= 3 and fields[2] == "RETURN" and fields[1].isdigit():
+                total += int(fields[1])
     return total
+
+
+def ssh_delete_user(username):
+    run(["pkill", "-u", username])
+    run(["userdel", "-r", username])
+    for parent, chain in (("OUTPUT", chain_name(username)),
+                          ("INPUT", chain_in_name(username))):
+        run(["iptables", "-t", "mangle", "-D", parent, "-j", chain])
+        run(["iptables", "-t", "mangle", "-F", chain])
+        run(["iptables", "-t", "mangle", "-X", chain])
+    legacy = f"MP_{username}"[:28]
+    run(["iptables", "-D", "OUTPUT", "-j", legacy])
+    run(["iptables", "-F", legacy])
+    run(["iptables", "-X", legacy])
 
 
 def ssh_set_enabled(username, enabled):
@@ -443,14 +720,59 @@ def xray_load():
 
 
 def xray_save(config):
+    """Validate, atomically publish and health-check an Xray config.
+
+    A bad candidate must never replace the last-known-good file. If restart
+    fails after publication, restore the previous config and restart again.
+    """
     if MOCK:
         return
-    with open(XRAY_CONFIG, "w") as fh:
-        json.dump(config, fh, indent=2)
-    run(["systemctl", "restart", "xray"])
+    import tempfile
+
+    config_dir = os.path.dirname(XRAY_CONFIG)
+    os.makedirs(config_dir, exist_ok=True)
+    fd, candidate = tempfile.mkstemp(prefix=".nexo-xray-", suffix=".json",
+                                     dir=config_dir)
+    backup = XRAY_CONFIG + ".nexo-last-good"
+    had_previous = os.path.isfile(XRAY_CONFIG)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(config, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        # Xray runs as root:xray. mkstemp creates mode 0600 root:root,
+        # and os.replace preserves those attributes unless corrected first.
+        try:
+            shutil.chown(candidate, user="root", group="xray")
+        except (LookupError, OSError) as exc:
+            raise RuntimeError("Xray group is missing; reinstall/repair Xray before publishing config: "
+                               + str(exc))
+        os.chmod(candidate, 0o640)
+        test = run(["xray", "run", "-test", "-config", candidate], timeout=30)
+        if test.returncode != 0:
+            detail = (test.stderr or test.stdout or "unknown Xray config error").strip()
+            raise RuntimeError("Xray rejected generated config: " + detail[-1600:])
+        if had_previous:
+            shutil.copy2(XRAY_CONFIG, backup)
+        os.replace(candidate, XRAY_CONFIG)
+        restart = run(["systemctl", "restart", "xray"], timeout=45)
+        if restart.returncode != 0 or not service_active("xray"):
+            detail = (restart.stderr or restart.stdout or "Xray service is not active").strip()
+            if had_previous and os.path.exists(backup):
+                shutil.copy2(backup, candidate)
+                shutil.chown(candidate, user="root", group="xray")
+                os.chmod(candidate, 0o640)
+                os.replace(candidate, XRAY_CONFIG)
+                run(["systemctl", "restart", "xray"], timeout=45)
+            raise RuntimeError("Xray failed after config publish; previous config restored: "
+                               + detail[-1200:])
+    finally:
+        if os.path.exists(candidate):
+            os.unlink(candidate)
 
 
 INBOUND_PROTOCOLS = ("vless", "vmess", "trojan", "shadowsocks")
+XRAY_USER_PROTOCOLS = {"vless", "vmess", "trojan", "shadowsocks"}
 INBOUND_NETWORKS = ("tcp", "ws", "grpc", "httpupgrade", "xhttp", "kcp")
 INBOUND_SECURITIES = ("none", "tls", "reality")
 SS_METHODS = {
@@ -491,17 +813,24 @@ def gen_reality_keys():
             priv = line.split(":", 1)[1].strip()
         if "public" in low and ":" in line:
             pub = line.split(":", 1)[1].strip().split(" ")[0]
-    if priv and pub:
+    if result.returncode == 0 and priv and pub:
         return priv, pub
-    # Fallback: OpenSSL X25519; raw keys are the last 32 bytes of the DER forms.
-    import subprocess
+    # Fallback: OpenSSL X25519; validate each subprocess result.
     proc = subprocess.run(["openssl", "genpkey", "-algorithm", "X25519"],
                           capture_output=True, timeout=20)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError("Unable to generate Reality private key: " +
+                           (proc.stderr or b"").decode(errors="replace")[-500:])
     priv_pem = proc.stdout
-    priv_der = subprocess.run(["openssl", "pkey", "-outform", "DER"],
-                              input=priv_pem, capture_output=True, timeout=20).stdout
-    pub_der = subprocess.run(["openssl", "pkey", "-pubout", "-outform", "DER"],
-                             input=priv_pem, capture_output=True, timeout=20).stdout
+    priv_result = subprocess.run(["openssl", "pkey", "-outform", "DER"],
+                                 input=priv_pem, capture_output=True, timeout=20)
+    pub_result = subprocess.run(["openssl", "pkey", "-pubout", "-outform", "DER"],
+                                input=priv_pem, capture_output=True, timeout=20)
+    if priv_result.returncode != 0 or pub_result.returncode != 0:
+        raise RuntimeError("OpenSSL failed to derive Reality key pair.")
+    priv_der, pub_der = priv_result.stdout, pub_result.stdout
+    if len(priv_der) < 32 or len(pub_der) < 32:
+        raise RuntimeError("OpenSSL returned malformed X25519 key material.")
     return _b64url(priv_der[-32:]), _b64url(pub_der[-32:])
 
 
@@ -513,9 +842,13 @@ def gen_inbound_cert(inbound_id, server_name):
     if MOCK:
         return cert, key
     if not (os.path.exists(cert) and os.path.exists(key)):
-        run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-             "-days", "3650", "-keyout", key, "-out", cert,
-             "-subj", f"/CN={server_name or 'localhost'}"], timeout=60)
+        result = run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                      "-days", "3650", "-keyout", key, "-out", cert,
+                      "-subj", f"/CN={server_name or 'localhost'}"], timeout=60)
+        if result.returncode != 0 or not (os.path.isfile(cert) and os.path.isfile(key)):
+            raise RuntimeError("TLS certificate generation failed: " +
+                               (result.stderr or result.stdout or "")[-800:])
+        os.chmod(key, 0o600)
     return cert, key
 
 
@@ -708,6 +1041,15 @@ def _validate_inbound(data):
         raise ValueError("Unknown Shadowsocks method.")
     if stream["flow"] not in ("", "xtls-rprx-vision"):
         raise ValueError("Unknown VLESS flow.")
+    if stream["flow"] and (protocol != "vless" or security != "reality" or network != "tcp"):
+        raise ValueError("xtls-rprx-vision requires VLESS + TCP + REALITY.")
+    if security == "reality" and not stream["dest"]:
+        stream["dest"] = "www.microsoft.com:443"
+    if security == "reality":
+        if ":" not in stream["dest"] or not stream["sni"] and not stream["dest"].split(":")[0]:
+            raise ValueError("REALITY requires a valid destination host:port and SNI.")
+    if security == "tls" and not stream["sni"]:
+        raise ValueError("TLS inbound requires an SNI/server hostname.")
     max_clients = int(data.get("max_clients") or 0)
     if max_clients < 0:
         raise ValueError("Max clients cannot be negative.")
@@ -730,26 +1072,61 @@ def _apply_security_material(inbound_id, security, stream):
     return stream
 
 
+def port_is_listening(port):
+    if MOCK:
+        return False
+    result = run(["ss", "-H", "-lntu"], timeout=8)
+    if result.returncode != 0:
+        raise RuntimeError("Unable to inspect listening ports; refusing unsafe inbound creation.")
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        local = fields[4]
+        try:
+            bound_port = int(local.rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        if bound_port == int(port):
+            return True
+    return False
+
+
 def create_inbound(data):
     protocol, network, security, port, stream, max_clients = _validate_inbound(data)
     conn = db()
-    if conn.execute("SELECT 1 FROM inbounds WHERE port = ?", (port,)).fetchone():
+    try:
+        if conn.execute("SELECT 1 FROM inbounds WHERE port = ?", (port,)).fetchone():
+            raise ValueError("Another inbound already uses that port.")
+        if port_is_listening(port):
+            raise ValueError(f"Port {port} is already occupied by another service.")
+        cursor = conn.execute(
+            "INSERT INTO inbounds (remark, protocol, port, network, path, security, "
+            "enabled, stream_json, max_clients) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?)",
+            (data.get("remark") or f"{protocol.upper()} {port}", protocol, port,
+             network, stream["path"], security, max_clients),
+        )
+        inbound_id = cursor.lastrowid
+        stream = _apply_security_material(inbound_id, security, stream)
+        conn.execute("UPDATE inbounds SET stream_json = ? WHERE id = ?",
+                     (json.dumps(stream), inbound_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
         conn.close()
-        raise ValueError("Another inbound already uses that port.")
-    cursor = conn.execute(
-        "INSERT INTO inbounds (remark, protocol, port, network, path, security, "
-        "enabled, stream_json, max_clients) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?)",
-        (data.get("remark") or f"{protocol.upper()} {port}", protocol, port,
-         network, stream["path"], security, max_clients),
-    )
-    inbound_id = cursor.lastrowid
-    conn.commit()
-    stream = _apply_security_material(inbound_id, security, stream)
-    conn.execute("UPDATE inbounds SET stream_json = ? WHERE id = ?",
-                 (json.dumps(stream), inbound_id))
-    conn.commit()
+        raise
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    try:
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        rollback = db()
+        rollback.execute("DELETE FROM inbounds WHERE id = ?", (inbound_id,))
+        rollback.commit()
+        rollback.close()
+        raise
+    audit_event("inbound.create", "inbound", inbound_id,
+                details={"protocol": protocol, "port": port, "network": network,
+                         "security": security})
     return inbound_id
 
 
@@ -759,7 +1136,8 @@ def update_inbound(inbound_id, data):
     if not row:
         conn.close()
         raise ValueError("Inbound not found.")
-    old_stream = inbound_stream(dict(row))
+    original = dict(row)
+    old_stream = inbound_stream(original)
     merged = dict(old_stream)
     merged.update({
         "protocol": row["protocol"], "network": row["network"],
@@ -768,7 +1146,6 @@ def update_inbound(inbound_id, data):
     })
     merged.update({k: v for k, v in data.items() if v is not None})
     protocol, network, security, port, stream, max_clients = _validate_inbound(merged)
-    # Keep generated material unless security is new or regeneration is asked.
     for keep in ("cert_file", "key_file", "reality_priv", "reality_pub", "short_id"):
         if old_stream.get(keep) and not data.get("regenerate"):
             stream[keep] = old_stream[keep]
@@ -776,6 +1153,9 @@ def update_inbound(inbound_id, data):
                     (port, inbound_id)).fetchone():
         conn.close()
         raise ValueError("Another inbound already uses that port.")
+    if port != original["port"] and port_is_listening(port):
+        conn.close()
+        raise ValueError(f"Port {port} is already occupied by another service.")
     stream = _apply_security_material(inbound_id, security, stream)
     conn.execute(
         "UPDATE inbounds SET remark = ?, protocol = ?, port = ?, network = ?, "
@@ -785,16 +1165,54 @@ def update_inbound(inbound_id, data):
     )
     conn.commit()
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    write_ovpn_access_list()
+    try:
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        restore = db()
+        restore.execute(
+            "UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, path=?, "
+            "security=?, enabled=?, stream_json=?, max_clients=? WHERE id=?",
+            (original["remark"], original["protocol"], original["port"],
+             original["network"], original["path"], original["security"],
+             original["enabled"], original["stream_json"], original.get("max_clients", 0),
+             inbound_id),
+        )
+        restore.commit()
+        restore.close()
+        raise
+    audit_event("inbound.update", "inbound", inbound_id,
+                details={"protocol": protocol, "port": port, "network": network,
+                         "security": security})
     return inbound_id
 
 
 def delete_inbound(inbound_id):
     conn = db()
+    row = conn.execute("SELECT * FROM inbounds WHERE id = ?", (inbound_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Inbound not found.")
+    original = dict(row)
     conn.execute("DELETE FROM inbounds WHERE id = ?", (inbound_id,))
     conn.commit()
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    try:
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        restore = db()
+        columns = list(original.keys())
+        names = ", ".join(columns)
+        placeholders = ", ".join("?" for _ in columns)
+        restore.execute(
+            f"INSERT INTO inbounds ({names}) VALUES ({placeholders})",
+            tuple(original[k] for k in columns),
+        )
+        restore.commit()
+        restore.close()
+        raise
+    audit_event("inbound.delete", "inbound", inbound_id,
+                details={"remark": original["remark"], "port": original["port"]})
 
 
 def xray_stats():
@@ -910,20 +1328,26 @@ def inbound_link(inbound, user, settings):
 # --------------------------------------------------------------------------
 
 def ovpn_create_user(username):
-    run_shell(
+    result = run_shell(
         f"cd {OVPN_DIR}/easy-rsa && EASYRSA_BATCH=1 ./easyrsa build-client-full "
         f"{username} nopass",
         timeout=120,
     )
+    if result.returncode != 0:
+        raise RuntimeError("OpenVPN client certificate creation failed: " +
+                           (result.stderr or result.stdout or "")[-800:])
 
 
 def ovpn_revoke_user(username):
-    run_shell(
+    result = run_shell(
         f"cd {OVPN_DIR}/easy-rsa && EASYRSA_BATCH=1 ./easyrsa revoke {username} && "
         f"EASYRSA_BATCH=1 ./easyrsa gen-crl && "
-        f"cp pki/crl.pem {OVPN_DIR}/crl.pem && systemctl restart openvpn-server@server || true",
+        f"cp pki/crl.pem {OVPN_DIR}/crl.pem && systemctl restart openvpn-server@server",
         timeout=120,
     )
+    if result.returncode != 0:
+        raise RuntimeError("OpenVPN certificate revocation failed: " +
+                           (result.stderr or result.stdout or "")[-800:])
 
 
 def ovpn_client_config(username, settings):
@@ -947,6 +1371,43 @@ def ovpn_client_config(username, settings):
         f"{base}\n<ca>\n{ca}\n</ca>\n<cert>\n{cert_body}\n</cert>\n"
         f"<key>\n{key}\n</key>\n"
     )
+
+
+def ovpn_denied_names(rows=None):
+    if rows is None:
+        rows = list_users_as_rows()
+    denied = []
+    for row in rows:
+        protocols = row["protocols"].split(",")
+        if "ovpn" not in protocols:
+            continue
+        expired = bool(row["expire_date"] and row["expire_date"] < today().isoformat())
+        over_quota = bool(row["quota_bytes"] and row["used_bytes"] >= row["quota_bytes"])
+        if not row["enabled"] or expired or over_quota:
+            denied.append(row.get("ovpn_cert_name") or row["username"])
+    return sorted(set(denied))
+
+
+def write_ovpn_access_list(rows=None):
+    """Atomically publish disabled OpenVPN common names for client-connect checks."""
+    denied = ovpn_denied_names(rows)
+    if MOCK:
+        return denied
+    os.makedirs(OVPN_DIR, exist_ok=True)
+    target = os.path.join(OVPN_DIR, "nexo-disabled-clients.txt")
+    fd, temp_path = tempfile.mkstemp(prefix=".nexo-disabled-", dir=OVPN_DIR, text=True)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            if denied:
+                fh.write("\n".join(denied) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, target)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return denied
 
 
 def ovpn_status_bytes():
@@ -997,7 +1458,9 @@ def user_public(row, settings, online_ips=None):
     data = {
         "id": row["id"],
         "username": row["username"],
-        "password": row["password"],
+        "package_id": row["package_id"] if "package_id" in row.keys() else None,
+        "package_snapshot": json.loads(row["package_snapshot_json"] or "{}")
+        if "package_snapshot_json" in row.keys() else {},
         "protocols": protocols,
         "uuid": row["uuid"],
         "ip_limit": row["ip_limit"] if "ip_limit" in row.keys() else 0,
@@ -1029,8 +1492,10 @@ def user_public(row, settings, online_ips=None):
         info["1_direct"] = f"{host}:{settings['ssh_port']}"
         info["2_websocket"] = f"{host}:{settings['ws_port']}"
         info["3_ws_payload"] = (
-            f"GET / HTTP/1.1[crlf]Host: {host}[crlf]Upgrade: websocket"
-            "[crlf]Connection: Upgrade[crlf][crlf]"
+            f"GET / HTTP/1.1[crlf]Host: {host}[crlf]"
+            "Upgrade: websocket[crlf]Connection: Upgrade[crlf]"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]"
+            "Sec-WebSocket-Version: 13[crlf][crlf]"
         )
         info["4_websocket_tls"] = (
             f"{host}:{settings['wss_port']}  (SNI: {settings.get('sni_host', '')})"
@@ -1038,8 +1503,10 @@ def user_public(row, settings, online_ips=None):
         if cf_host:
             info["5_cloudflare_ws"] = f"{cf_host}:443"
             info["6_cf_payload"] = (
-                f"ACL / [split]HTTP/1.1 [lf]Host: {cf_host}[crlf]"
-                "Connection: [lf]Upgrade: Websocket[lf][lf]"
+                f"GET / HTTP/1.1[crlf]Host: {cf_host}[crlf]"
+                "Upgrade: websocket[crlf]Connection: Upgrade[crlf]"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]"
+                "Sec-WebSocket-Version: 13[crlf][crlf]"
             )
     seen_protocols = set()
     for inbound in list_inbounds():
@@ -1087,12 +1554,21 @@ def user_on_inbound(row, inbound):
 
 def clean_inbound_ids(data):
     ids = data.get("inbound_ids")
-    if not isinstance(ids, list):
+    if ids is None:
         return ""
+    if not isinstance(ids, list):
+        raise ValueError("inbound_ids must be an array of inbound IDs.")
     valid = {ib["id"] for ib in list_inbounds()}
-    keep = sorted({int(i) for i in ids
-                   if str(i).isdigit() and int(i) in valid})
-    return json.dumps(keep) if keep else ""
+    keep = set()
+    for item in ids:
+        if isinstance(item, bool) or not str(item).isdigit():
+            raise ValueError("Inbound IDs must be positive integers.")
+        inbound_id = int(item)
+        if inbound_id not in valid:
+            raise ValueError(f"Inbound {inbound_id} does not exist.")
+        keep.add(inbound_id)
+    # Empty array intentionally means all matching inbounds (legacy contract).
+    return json.dumps(sorted(keep)) if keep else ""
 
 
 def check_inbound_capacity(protocols, exclude_user_id=None, inbound_ids=""):
@@ -1123,50 +1599,293 @@ def check_inbound_capacity(protocols, exclude_user_id=None, inbound_ids=""):
                 f"({count}/{max_clients} clients). Raise its client limit first.")
 
 
+def package_public(row):
+    item = dict(row)
+    item["protocols"] = json.loads(item.pop("protocols_json") or '["ssh"]')
+    item["inbound_ids"] = json.loads(item.pop("inbound_ids_json") or "[]")
+    item["quota_gb"] = round(item["quota_bytes"] / GB, 2) if item["quota_bytes"] else 0
+    item["enabled"] = bool(item["enabled"])
+    return item
+
+
+def validate_package(data):
+    name = data.get("name")
+    if not isinstance(name, str) or not (2 <= len(name.strip()) <= 48):
+        raise ValueError("Package name must be 2-48 characters.")
+    try:
+        quota_gb = float(data.get("quota_gb") or 0)
+        days = int(data.get("validity_days") or 0)
+        ip_limit = int(data.get("ip_limit") or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Package quota, validity and IP limit must be numeric.")
+    if not 0 <= quota_gb <= 1000000:
+        raise ValueError("Package quota must be between 0 and 1,000,000 GB.")
+    if not 0 <= days <= 3650:
+        raise ValueError("Package validity must be between 0 and 3650 days.")
+    if not 0 <= ip_limit <= 10000:
+        raise ValueError("Package IP limit must be between 0 and 10,000.")
+    protocols = data.get("protocols", ["ssh"])
+    allowed = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
+    if not isinstance(protocols, list) or not protocols:
+        raise ValueError("Select at least one supported protocol.")
+    if any(not isinstance(p, str) or p not in allowed for p in protocols):
+        raise ValueError("Package contains an unsupported protocol.")
+    protocols = list(dict.fromkeys(protocols))
+    inbound_ids = data.get("inbound_ids", [])
+    if not isinstance(inbound_ids, list):
+        raise ValueError("Package inbound_ids must be an array.")
+    valid_ids = {ib["id"] for ib in list_inbounds()}
+    normalized_ids = []
+    inbound_map = {ib["id"]: ib for ib in list_inbounds()}
+    for item in inbound_ids:
+        if isinstance(item, bool) or not str(item).isdigit() or int(item) not in valid_ids:
+            raise ValueError(f"Package references unknown inbound: {item}.")
+        inbound_id = int(item)
+        if inbound_map[inbound_id]["protocol"] not in protocols:
+            raise ValueError(
+                f"Inbound {inbound_id} uses {inbound_map[inbound_id]['protocol']}, "
+                "which is not enabled in this package.")
+        normalized_ids.append(inbound_id)
+    return {
+        "name": name.strip(),
+        "quota_bytes": int(round(quota_gb * GB)),
+        "validity_days": days,
+        "ip_limit": ip_limit,
+        "protocols": protocols,
+        "inbound_ids": sorted(set(normalized_ids)),
+    }
+
+
+def list_packages():
+    conn = db()
+    rows = conn.execute("SELECT * FROM packages ORDER BY name COLLATE NOCASE").fetchall()
+    conn.close()
+    return [package_public(row) for row in rows]
+
+
+def create_package(data):
+    values = validate_package(data)
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = db()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO packages (name, quota_bytes, validity_days, ip_limit, "
+            "protocols_json, inbound_ids_json, enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (values["name"], values["quota_bytes"], values["validity_days"],
+             values["ip_limit"], json.dumps(values["protocols"]),
+             json.dumps(values["inbound_ids"]), now, now),
+        )
+        package_id = cursor.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        conn.close()
+        raise ValueError("A package with this name already exists.")
+    conn.close()
+    audit_event("package.create", "package", package_id,
+                details={"name": values["name"]})
+    return package_id
+
+
+def update_package(package_id, data):
+    conn = db()
+    row = conn.execute("SELECT * FROM packages WHERE id=?", (package_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Package not found.")
+    current = package_public(row)
+    merged = {
+        "name": current["name"],
+        "quota_gb": current["quota_gb"],
+        "validity_days": current["validity_days"],
+        "ip_limit": current["ip_limit"],
+        "protocols": current["protocols"],
+        "inbound_ids": current["inbound_ids"],
+    }
+    merged.update(data)
+    values = validate_package(merged)
+    try:
+        conn.execute(
+            "UPDATE packages SET name=?, quota_bytes=?, validity_days=?, ip_limit=?, "
+            "protocols_json=?, inbound_ids_json=?, updated_at=? WHERE id=?",
+            (values["name"], values["quota_bytes"], values["validity_days"],
+             values["ip_limit"], json.dumps(values["protocols"]),
+             json.dumps(values["inbound_ids"]),
+             datetime.now().isoformat(timespec="seconds"), package_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        conn.close()
+        raise ValueError("A package with this name already exists.")
+    conn.close()
+    audit_event("package.update", "package", package_id,
+                details={"name": values["name"]})
+    return package_id
+
+
+def delete_package(package_id):
+    conn = db()
+    row = conn.execute("SELECT name FROM packages WHERE id=?", (package_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Package not found.")
+    if conn.execute("SELECT 1 FROM users WHERE package_id=? LIMIT 1",
+                    (package_id,)).fetchone():
+        conn.close()
+        raise ValueError("Package is assigned to users. Unassign them before deletion.")
+    conn.execute("DELETE FROM packages WHERE id=?", (package_id,))
+    conn.commit()
+    conn.close()
+    audit_event("package.delete", "package", package_id,
+                details={"name": row["name"]})
+
+
+def package_snapshot(row):
+    return {
+        "id": row["id"], "name": row["name"],
+        "quota_bytes": row["quota_bytes"],
+        "validity_days": row["validity_days"],
+        "ip_limit": row["ip_limit"],
+        "protocols": json.loads(row["protocols_json"] or '["ssh"]'),
+        "inbound_ids": json.loads(row["inbound_ids_json"] or "[]"),
+    }
+
+
 def create_user(data):
-    username = (data.get("username") or "").strip()
+    raw_username = data.get("username") or ""
+    if not isinstance(raw_username, str):
+        raise ValueError("Username must be text.")
+    username = raw_username.strip()
     if not USERNAME_RE.match(username):
         raise ValueError("Username must be 3-32 chars, start with a letter, "
                          "and use lowercase letters, digits, - or _.")
     if username in ("root", "admin", "ubuntu"):
         raise ValueError("That username is reserved.")
-    protocols = [p for p in data.get("protocols", ["ssh"])
-                 if p in ("ssh", "vless", "vmess", "trojan", "shadowsocks",
-                          "ovpn", "dnstt")]
-    if not protocols:
+    data = dict(data)
+    package_id = None
+    package_data = {}
+    if data.get("package_id") not in (None, ""):
+        try:
+            package_id = int(data["package_id"])
+        except (TypeError, ValueError):
+            raise ValueError("Invalid package selection.")
+        conn = db()
+        package_row = conn.execute(
+            "SELECT * FROM packages WHERE id=? AND enabled=1", (package_id,)
+        ).fetchone()
+        conn.close()
+        if not package_row:
+            raise ValueError("Selected package does not exist or is disabled.")
+        package_data = package_snapshot(package_row)
+        data.update({
+            "protocols": package_data["protocols"],
+            "quota_gb": package_data["quota_bytes"] / GB if package_data["quota_bytes"] else 0,
+            "days": package_data["validity_days"],
+            "ip_limit": package_data["ip_limit"],
+            "hwid_limit": 0,
+            "inbound_ids": package_data["inbound_ids"],
+        })
+    requested_protocols = data.get("protocols", ["ssh"])
+    allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
+    if not isinstance(requested_protocols, list) or not requested_protocols:
         raise ValueError("Pick at least one protocol.")
+    if any(not isinstance(p, str) or p not in allowed_protocols for p in requested_protocols):
+        raise ValueError("One or more selected protocols are unsupported.")
+    protocols = list(dict.fromkeys(requested_protocols))
     inbound_ids = clean_inbound_ids(data)
     check_inbound_capacity(protocols, inbound_ids=inbound_ids)
-    password = data.get("password") or secrets.token_urlsafe(6)
-    days = int(data.get("days") or 30)
+    password = data.get("password") or secrets.token_urlsafe(12)
+    if not isinstance(password, str) or not (8 <= len(password) <= 128) or any(
+            ch in password for ch in ("\n", "\r", "\x00")):
+        raise ValueError("Credential must be 8-128 characters and contain no line breaks.")
+    try:
+        days = int(data.get("days") if data.get("days") is not None else 30)
+        quota_gb = float(data.get("quota_gb") or 0)
+        ip_limit = int(data.get("ip_limit") or 0)
+        hwid_limit = int(data.get("hwid_limit") or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Days, quota and limits must be valid numbers.")
+    if not 0 <= days <= 3650:
+        raise ValueError("Validity must be between 0 and 3650 days.")
+    if not 0 <= quota_gb <= 1000000:
+        raise ValueError("Quota must be between 0 and 1,000,000 GB.")
+    if not 0 <= ip_limit <= 10000:
+        raise ValueError("IP limit must be between 0 and 10,000.")
+    if hwid_limit != 0:
+        raise ValueError("Stable device identity is not available for these protocols; use IP limits instead.")
+    note = str(data.get("note", ""))
+    if len(note) > 2000:
+        raise ValueError("Note cannot exceed 2,000 characters.")
     expire = (today() + timedelta(days=days)).isoformat() if days > 0 else ""
-    quota = int(round(float(data.get("quota_gb") or 0) * GB))
+    quota = int(round(quota_gb * GB))
     conn = db()
     if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         conn.close()
         raise ValueError("A user with that name already exists in the panel.")
+    ovpn_cert_name = (f"{username}-{secrets.token_hex(3)}"
+                      if "ovpn" in protocols else "")
     cursor = conn.execute(
         "INSERT INTO users (username, password, protocols, uuid, quota_bytes, "
-        "expire_date, created_at, note, ip_limit, hwid_limit, inbound_ids) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (username, password, ",".join(protocols), str(uuidlib.uuid4()),
+        "expire_date, created_at, note, ip_limit, hwid_limit, inbound_ids, "
+        "package_id, package_snapshot_json, ovpn_cert_name) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (username, password if ({"trojan", "shadowsocks"} & set(protocols)) else "",
+         ",".join(protocols), str(uuidlib.uuid4()),
          quota, expire, datetime.now().isoformat(timespec="seconds"),
-         data.get("note", ""), int(data.get("ip_limit") or 0),
-         int(data.get("hwid_limit") or 0), inbound_ids),
+         note, ip_limit, hwid_limit, inbound_ids, package_id,
+         json.dumps(package_data) if package_data else "{}", ovpn_cert_name),
     )
     user_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    if "ssh" in protocols:
-        ssh_create_user(username, password, expire)
-    if "ovpn" in protocols:
-        ovpn_create_user(username)
+    ssh_created = False
+    ovpn_created = False
+    try:
+        if "ssh" in protocols:
+            ssh_create_user(username, password, expire)
+            ssh_created = True
+        if "ovpn" in protocols:
+            ovpn_create_user(ovpn_cert_name)
+            ovpn_created = True
+        if set(protocols) & XRAY_USER_PROTOCOLS:
+            xray_sync_users(list_users_as_rows())
+    except Exception:
+        # Compensate external resources in reverse order. Keep the original
+        # failure visible; cleanup is best-effort and never hides it.
+        if ovpn_created:
+            try:
+                ovpn_revoke_user(ovpn_cert_name)
+            except Exception:
+                pass
+        if ssh_created:
+            try:
+                ssh_delete_user(username)
+            except Exception:
+                pass
+        cleanup = db()
+        cleanup.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        cleanup.commit()
+        cleanup.close()
+        if set(protocols) & XRAY_USER_PROTOCOLS:
+            try:
+                xray_sync_users(list_users_as_rows())
+            except Exception:
+                pass
+        raise
     settings = get_settings()
     conn = db()
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
-    xray_sync_users(list_users_as_rows())
-    return user_public(row, settings)
+    audit_event("user.create", "user", user_id,
+                details={"username": username, "protocols": protocols})
+    public = user_public(row, settings)
+    # The initial SSH/Trojan/SS credentials are delivered once by the create
+    # response. They are never included in subsequent list/detail responses.
+    if set(protocols) & {"ssh", "trojan", "shadowsocks"}:
+        public["credential_once"] = password
+    return public
 
 
 def list_users_as_rows():
@@ -1183,20 +1902,65 @@ def update_user(user_id, data):
         conn.close()
         raise ValueError("User not found.")
     row = dict(row)
+    data = dict(data)
     protocols = row["protocols"].split(",")
+    credential_once = None
+    package_id = row.get("package_id")
+    package_data = json.loads(row.get("package_snapshot_json") or "{}")
+    if "package_id" in data:
+        if data["package_id"] in (None, ""):
+            package_id = None
+            package_data = {}
+        else:
+            try:
+                package_id = int(data["package_id"])
+            except (TypeError, ValueError):
+                raise ValueError("Invalid package selection.")
+            conn_pkg = db()
+            package_row = conn_pkg.execute(
+                "SELECT * FROM packages WHERE id=? AND enabled=1", (package_id,)
+            ).fetchone()
+            conn_pkg.close()
+            if not package_row:
+                raise ValueError("Selected package does not exist or is disabled.")
+            package_data = package_snapshot(package_row)
+            data.update({
+                "protocols": package_data["protocols"],
+                "quota_gb": package_data["quota_bytes"] / GB if package_data["quota_bytes"] else 0,
+                "days": package_data["validity_days"],
+                "ip_limit": package_data["ip_limit"],
+                "hwid_limit": 0,
+                "inbound_ids": package_data["inbound_ids"],
+            })
     if "protocols" in data:
-        new_protocols = [p for p in data.get("protocols") or []
-                         if p in ("ssh", "vless", "vmess", "trojan",
-                                  "shadowsocks", "ovpn", "dnstt")]
-        if new_protocols and new_protocols != protocols:
+        new_protocols = data.get("protocols")
+        allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
+        if not isinstance(new_protocols, list) or not new_protocols:
+            raise ValueError("A user must have at least one enabled protocol.")
+        if any(not isinstance(p, str) or
+               (p not in allowed_protocols and p not in protocols) for p in new_protocols):
+            raise ValueError("One or more selected protocols are unsupported.")
+        new_protocols = list(dict.fromkeys(new_protocols))
+        if new_protocols != protocols:
+            removed = [p for p in protocols if p not in new_protocols]
+            if removed:
+                raise ValueError(
+                    "Protocol removal requires a dedicated revoke workflow. "
+                    "Delete this user and create a new one with the desired protocols.")
             check_inbound_capacity(new_protocols, exclude_user_id=user_id)
             added = [p for p in new_protocols if p not in protocols]
             if "ssh" in added and not ssh_user_exists(row["username"]):
-                ssh_create_user(row["username"],
-                                data.get("password") or row["password"],
-                                row["expire_date"])
+                ssh_password = data.get("password") or row["password"]
+                if not ssh_password:
+                    ssh_password = secrets.token_urlsafe(12)
+                    credential_once = ssh_password
+                ssh_create_user(row["username"], ssh_password, row["expire_date"])
             if "ovpn" in added:
-                ovpn_create_user(row["username"])
+                row["ovpn_cert_name"] = f"{row['username']}-{secrets.token_hex(3)}"
+                ovpn_create_user(row["ovpn_cert_name"])
+            if ({"trojan", "shadowsocks"} & set(new_protocols)) and not row["password"]:
+                credential_once = secrets.token_urlsafe(12)
+                row["password"] = credential_once
             protocols = new_protocols
             row["protocols"] = ",".join(new_protocols)
     if "inbound_ids" in data:
@@ -1204,27 +1968,41 @@ def update_user(user_id, data):
         check_inbound_capacity(protocols, exclude_user_id=user_id,
                                inbound_ids=row["inbound_ids"])
     if "quota_gb" in data:
-        row["quota_bytes"] = int(round(float(data["quota_gb"] or 0) * GB))
+        quota_gb = float(data["quota_gb"] or 0)
+        if not 0 <= quota_gb <= 1000000:
+            raise ValueError("Quota must be between 0 and 1,000,000 GB.")
+        row["quota_bytes"] = int(round(quota_gb * GB))
     if "days" in data:
         days = int(data["days"] or 0)
+        if not 0 <= days <= 3650:
+            raise ValueError("Validity must be between 0 and 3650 days.")
         row["expire_date"] = (
             (today() + timedelta(days=days)).isoformat() if days > 0 else ""
         )
     if "password" in data and data["password"]:
-        row["password"] = data["password"]
+        new_password = data["password"]
+        if not isinstance(new_password, str) or not (8 <= len(new_password) <= 128) or any(
+                ch in new_password for ch in ("\n", "\r", "\x00")):
+            raise ValueError("Credential must be 8-128 characters and contain no line breaks.")
         if "ssh" in protocols:
             proc = subprocess.run(
-                ["chpasswd"], input=f"{row['username']}:{row['password']}\n",
+                ["chpasswd"], input=f"{row['username']}:{new_password}\n",
                 capture_output=True, text=True,
             ) if not MOCK else subprocess.CompletedProcess([], 0, "", "")
             if not MOCK and proc.returncode != 0:
                 raise RuntimeError("chpasswd failed.")
+        row["password"] = (new_password if ({"trojan", "shadowsocks"} & set(protocols))
+                           else "")
+        if {"ssh", "trojan", "shadowsocks"} & set(protocols):
+            credential_once = new_password
     if "note" in data:
         row["note"] = data["note"]
     if "ip_limit" in data:
         row["ip_limit"] = int(data["ip_limit"] or 0)
-    if "hwid_limit" in data:
-        row["hwid_limit"] = int(data["hwid_limit"] or 0)
+        if not 0 <= row["ip_limit"] <= 10000:
+            raise ValueError("IP limit must be between 0 and 10,000.")
+    if "hwid_limit" in data and int(data["hwid_limit"] or 0) > 0:
+        raise ValueError("Stable device identity is not available for these protocols; use IP limits instead.")
     if data.get("reset_hwids"):
         row["hwids"] = ""
     if "enabled" in data:
@@ -1236,20 +2014,28 @@ def update_user(user_id, data):
     conn.execute(
         "UPDATE users SET quota_bytes = ?, expire_date = ?, password = ?, "
         "note = ?, enabled = ?, ip_limit = ?, hwid_limit = ?, hwids = ?, "
-        "protocols = ?, auto_locked = ?, inbound_ids = ? WHERE id = ?",
+        "protocols = ?, auto_locked = ?, inbound_ids = ?, package_id = ?, "
+        "package_snapshot_json = ?, ovpn_cert_name = ? WHERE id = ?",
         (row["quota_bytes"], row["expire_date"], row["password"],
          row["note"], row["enabled"], row["ip_limit"], row["hwid_limit"],
          row["hwids"], row["protocols"],
          row["auto_locked"] if "auto_locked" in row else 0,
-         row["inbound_ids"] if "inbound_ids" in row else "", user_id),
+         row["inbound_ids"] if "inbound_ids" in row else "", package_id,
+         json.dumps(package_data), row.get("ovpn_cert_name", ""), user_id),
     )
     if "ssh" in protocols and "days" in data:
         run(["chage", "-E", row["expire_date"] or "-1", row["username"]])
     conn.commit()
     fresh = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
-    xray_sync_users(list_users_as_rows())
-    return user_public(fresh, get_settings())
+    if XRAY_USER_PROTOCOLS & set(protocols):
+        xray_sync_users(list_users_as_rows())
+    public = user_public(fresh, get_settings())
+    if credential_once:
+        public["credential_once"] = credential_once
+    audit_event("user.update", "user", user_id,
+                details={"username": row["username"], "protocols": protocols})
+    return public
 
 
 def apply_enabled_state(row):
@@ -1284,7 +2070,8 @@ def renew_user(user_id, days, reset_traffic):
             row["ssh_last"] = ssh_chain_bytes(row["username"])
         up, down = xray_stats().get(row["username"], (0, 0))
         row["xray_up_last"], row["xray_down_last"] = up, down
-        row["ovpn_last"] = ovpn_status_bytes().get(row["username"], 0)
+        row["ovpn_last"] = ovpn_status_bytes().get(
+            row.get("ovpn_cert_name") or row["username"], 0)
     row["enabled"] = 1
     row["auto_locked"] = 0
     conn.execute(
@@ -1296,12 +2083,16 @@ def renew_user(user_id, days, reset_traffic):
     )
     conn.commit()
     apply_enabled_state(row)
+    write_ovpn_access_list()
     fresh = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     if "ssh" in row["protocols"].split(",") and ssh_user_exists(row["username"]):
         run(["chage", "-E", row["expire_date"], row["username"]])
         ssh_set_enabled(row["username"], True)
-    xray_sync_users(list_users_as_rows())
+    if XRAY_USER_PROTOCOLS & set(row["protocols"].split(",")):
+        xray_sync_users(list_users_as_rows())
+    audit_event("user.renew", "user", user_id,
+                details={"days": days, "traffic_reset": bool(reset_traffic)})
     return user_public(fresh, get_settings())
 
 
@@ -1477,15 +2268,27 @@ def delete_user(user_id):
         conn.close()
         raise ValueError("User not found.")
     row = dict(row)
+    protocols = row["protocols"].split(",")
+    # Remove the client from Xray before deleting the durable control-plane row.
+    conn.execute("UPDATE users SET enabled=0, auto_locked=0 WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    try:
+        if XRAY_USER_PROTOCOLS & set(protocols):
+            xray_sync_users(list_users_as_rows())
+        if "ssh" in protocols and ssh_user_exists(row["username"]):
+            ssh_delete_user(row["username"])
+        if "ovpn" in protocols:
+            ovpn_revoke_user(row.get("ovpn_cert_name") or row["username"])
+    except Exception:
+        # Keep the record present but disabled so an operator can repair cleanup.
+        raise
+    conn = db()
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
-    protocols = row["protocols"].split(",")
-    if "ssh" in protocols and ssh_user_exists(row["username"]):
-        ssh_delete_user(row["username"])
-    if "ovpn" in protocols:
-        ovpn_revoke_user(row["username"])
-    xray_sync_users(list_users_as_rows())
+    audit_event("user.delete", "user", user_id,
+                details={"username": row["username"], "protocols": protocols})
 
 
 def enforce():
@@ -1506,14 +2309,14 @@ def enforce():
             delta = current - row["ssh_last"] if current >= row["ssh_last"] else current
             used += max(delta, 0)
             row["ssh_last"] = current
-        if {"vless", "vmess"} & set(row["protocols"].split(",")):
+        if XRAY_USER_PROTOCOLS & set(row["protocols"].split(",")):
             up, down = xstats.get(row["username"], (0, 0))
             delta = (up - row["xray_up_last"] if up >= row["xray_up_last"] else up) \
                 + (down - row["xray_down_last"] if down >= row["xray_down_last"] else down)
             used += max(delta, 0)
             row["xray_up_last"], row["xray_down_last"] = up, down
         if "ovpn" in row["protocols"].split(","):
-            current = ostats.get(row["username"], 0)
+            current = ostats.get(row.get("ovpn_cert_name") or row["username"], 0)
             delta = current - row["ovpn_last"] if current >= row["ovpn_last"] else 0
             used += max(delta, 0)
             row["ovpn_last"] = current
@@ -1543,6 +2346,7 @@ def enforce():
         )
     conn.commit()
     conn.close()
+    write_ovpn_access_list()
     if changed:
         xray_sync_users(list_users_as_rows())
     enforce_ip_limits(all_rows)
@@ -1583,10 +2387,29 @@ def service_action(service_id, action):
     allowed = {sid for sid, _, _ in SERVICES}
     if service_id not in allowed or action not in ("start", "stop", "restart"):
         raise ValueError("Unknown service or action.")
-    if service_id == "mpanel" and action in ("stop",):
-        raise ValueError("The panel cannot stop itself from the panel.")
-    run(["systemctl", action, service_id], check=True)
-    return True
+    if service_id == "mpanel":
+        raise ValueError("The panel service cannot be controlled from its own web session.")
+    result = run(["systemctl", action, service_id], timeout=30)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "systemctl failed").strip()
+        raise RuntimeError(f"Could not {action} {service_id}: {detail[-800:]}")
+    # systemctl returning zero only confirms that the job was queued/completed;
+    # verify the resulting state before reporting success to the UI.
+    expected_active = action in ("start", "restart")
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        if service_active(service_id) == expected_active:
+            audit_event("service." + action, "service", service_id)
+            return {"ok": True, "active": expected_active}
+        time.sleep(0.4)
+    state = "active" if service_active(service_id) else "inactive"
+    journal = run(["journalctl", "-u", service_id, "-n", "12", "--no-pager"],
+                  timeout=10)
+    detail = (journal.stdout or journal.stderr or "").strip()
+    raise RuntimeError(
+        f"{service_id} did not become { 'active' if expected_active else 'inactive' } "
+        f"within 12 seconds (current state: {state}). " + detail[-1200:]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1600,13 +2423,35 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # -- plumbing ----------------------------------------------------------
+    def _security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'",
+        )
+        if isinstance(self.connection, ssl.SSLSocket):
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+
     def send_json(self, payload, status=200, headers=None):
         body = json.dumps(payload).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._security_headers()
         for key, value in (headers or {}).items():
-            self.send_header(key, value)
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    self.send_header(key, item)
+            else:
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1616,16 +2461,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self._security_headers()
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
     def body_json(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length") or "0"
+        if not raw_length.isdigit():
+            raise ValueError("Invalid Content-Length.")
+        length = int(raw_length)
+        if length > MAX_REQUEST_BODY:
+            raise ValueError("Request body exceeds 1 MiB limit.")
         if not length:
             return {}
-        return json.loads(self.rfile.read(length) or b"{}")
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("Request body must be valid UTF-8 JSON.")
+        if not isinstance(data, dict):
+            raise ValueError("JSON request body must be an object.")
+        return data
+
+    def request_origin_ok(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        parsed = urlparse(origin)
+        host = (self.headers.get("Host") or "").lower()
+        return parsed.scheme in ("https", "http") and parsed.netloc.lower() == host
 
     def session_user(self):
         cookie = self.headers.get("Cookie") or ""
@@ -1634,7 +2499,15 @@ class Handler(BaseHTTPRequestHandler):
             part = part.strip()
             if part.startswith("mpanel_session="):
                 token = part.split("=", 1)[1]
-        if token and token in _sessions and _sessions[token] > time.time():
+        if not token or len(token) > 256:
+            return None
+        conn = db()
+        row = conn.execute(
+            "SELECT expires_at, revoked_at FROM sessions WHERE token_hash=?",
+            (token_hash(token),),
+        ).fetchone()
+        conn.close()
+        if row and not row["revoked_at"] and int(row["expires_at"]) > int(time.time()):
             return token
         return None
 
@@ -1643,6 +2516,28 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.send_json({"error": "Not logged in."}, status=401)
         return False
+
+    def require_csrf(self):
+        token = self.session_user()
+        if not token:
+            self.send_json({"error": "Not logged in."}, status=401)
+            return False
+        if not self.request_origin_ok():
+            self.send_json({"error": "Cross-origin request rejected."}, status=403)
+            return False
+        supplied = self.headers.get("X-CSRF-Token") or ""
+        conn = db()
+        row = conn.execute(
+            "SELECT csrf_hash FROM sessions WHERE token_hash=? AND revoked_at IS NULL",
+            (token_hash(token),),
+        ).fetchone()
+        conn.close()
+        if not row or not supplied or not hmac.compare_digest(
+                row["csrf_hash"], token_hash(supplied)):
+            self.send_json({"error": "CSRF validation failed. Reload and sign in again."},
+                           status=403)
+            return False
+        return True
 
     # -- routes ------------------------------------------------------------
     def do_GET(self):
@@ -1687,7 +2582,12 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
                 if not row:
                     return self.send_json({"error": "User not found."}, status=404)
-                config = ovpn_client_config(row["username"], settings)
+                if "ovpn" not in row["protocols"].split(",") or not row["enabled"]:
+                    return self.send_json({"error": "OpenVPN is not enabled for this active user."},
+                                          status=403)
+                audit_event("openvpn.profile_download", "user", row["id"],
+                            request_id=self.headers.get("X-Request-ID", ""))
+                config = ovpn_client_config(row.get("ovpn_cert_name") or row["username"], settings)
                 return self.send_text(
                     config, content_type="application/octet-stream",
                     headers={"Content-Disposition":
@@ -1701,6 +2601,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.require_auth():
                     return
                 return self.send_json({"services": services_list()})
+            if path == "/api/audit":
+                if not self.require_auth():
+                    return
+                return self.send_json({"events": list_audit_events()})
+            if path == "/api/packages":
+                if not self.require_auth():
+                    return
+                return self.send_json({"packages": list_packages()})
             if path == "/api/settings":
                 if not self.require_auth():
                     return
@@ -1713,32 +2621,90 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/api/login":
+                if not self.request_origin_ok():
+                    return self.send_json({"error": "Cross-origin request rejected."}, status=403)
                 data = self.body_json()
+                username = data.get("username", "")
+                password = data.get("password", "")
+                if not isinstance(username, str) or not isinstance(password, str):
+                    return self.send_json({"error": "Username and password must be text."},
+                                          status=400)
+                source_key = self.client_address[0] if self.client_address else "unknown"
+                locked, retry_after = login_lock_state(source_key)
+                if locked:
+                    return self.send_json(
+                        {"error": "Too many login attempts. Try again later.",
+                         "retry_after": retry_after}, status=429,
+                        headers={"Retry-After": str(retry_after)})
                 conn = db()
                 admin = conn.execute("SELECT * FROM admin WHERE id = 1").fetchone()
                 conn.close()
-                if admin and data.get("username") == admin["username"] and \
-                        check_password(data.get("password", ""), admin["password_hash"]):
+                if admin and username == admin["username"] and \
+                        check_password(password, admin["password_hash"]):
+                    clear_login_failures(source_key)
                     token = secrets.token_urlsafe(32)
-                    _sessions[token] = time.time() + 7 * 86400
+                    csrf = secrets.token_urlsafe(32)
+                    now = int(time.time())
+                    conn = db()
+                    conn.execute(
+                        "DELETE FROM sessions WHERE expires_at < ? OR revoked_at < ?",
+                        (now, now - 30 * 86400),
+                    )
+                    conn.execute(
+                        "INSERT INTO sessions (token_hash, csrf_hash, created_at, expires_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (token_hash(token), token_hash(csrf), now, now + SESSION_TTL_SECONDS),
+                    )
+                    conn.commit()
+                    conn.close()
+                    audit_event("auth.login", request_id=self.headers.get("X-Request-ID", ""))
                     return self.send_json(
                         {"ok": True},
-                        headers={"Set-Cookie":
-                                 f"mpanel_session={token}; Path=/; HttpOnly; "
-                                 "SameSite=Lax; Max-Age=604800"},
+                        headers={"Set-Cookie": [
+                            f"mpanel_session={token}; Path=/; HttpOnly; Secure; "
+                            "SameSite=Strict; Max-Age=604800",
+                            f"mpanel_csrf={csrf}; Path=/; Secure; SameSite=Strict; Max-Age=604800",
+                        ]},
                     )
+                record_login_failure(source_key)
+                audit_event("auth.login_failed", request_id=self.headers.get("X-Request-ID", ""),
+                            outcome="failure", details={"source": source_key})
                 return self.send_json({"error": "Wrong username or password."},
                                       status=403)
             if path == "/api/logout":
+                if not self.require_csrf():
+                    return
                 token = self.session_user()
                 if token:
-                    _sessions.pop(token, None)
-                return self.send_json({"ok": True})
+                    conn = db()
+                    conn.execute("UPDATE sessions SET revoked_at=? WHERE token_hash=?",
+                                 (int(time.time()), token_hash(token)))
+                    conn.commit()
+                    conn.close()
+                    audit_event("auth.logout", request_id=self.headers.get("X-Request-ID", ""))
+                return self.send_json(
+                    {"ok": True},
+                    headers={"Set-Cookie": [
+                        "mpanel_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+                        "mpanel_csrf=; Path=/; Secure; SameSite=Strict; Max-Age=0",
+                    ]},
+                )
             if not self.require_auth():
+                return
+            if not self.require_csrf():
                 return
             if path == "/api/users":
                 user = create_user(self.body_json())
                 return self.send_json({"user": user})
+            if path == "/api/packages":
+                package_id = create_package(self.body_json())
+                return self.send_json({"ok": True, "id": package_id,
+                                       "packages": list_packages()})
+            match = re.fullmatch(r"/api/packages/(\d+)", path)
+            if match:
+                package_id = update_package(int(match.group(1)), self.body_json())
+                return self.send_json({"ok": True, "id": package_id,
+                                       "packages": list_packages()})
             match = re.fullmatch(r"/api/users/(\d+)/renew", path)
             if match:
                 data = self.body_json()
@@ -1763,10 +2729,15 @@ class Handler(BaseHTTPRequestHandler):
                 service_action(match.group(1), match.group(2))
                 return self.send_json({"ok": True, "services": services_list()})
             if path == "/api/settings":
-                data = self.body_json()
+                data = validate_settings(self.body_json())
+                changed_keys = []
                 for key, value in data.items():
-                    if key in DEFAULT_SETTINGS:
-                        set_setting(key, value)
+                    set_setting(key, value)
+                    changed_keys.append(key)
+                if changed_keys:
+                    audit_event("settings.update", "settings", "server",
+                                request_id=self.headers.get("X-Request-ID", ""),
+                                details={"keys": changed_keys})
                 if "dnstt_domain" in data and not MOCK:
                     try:
                         os.makedirs(DNSTT_DIR, exist_ok=True)
@@ -1783,12 +2754,23 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                     return self.send_json({"error": "Current password is wrong."},
                                           status=403)
+                new_password = data.get("new", "")
+                if not isinstance(new_password, str) or len(new_password) < 12:
+                    conn.close()
+                    return self.send_json({"error": "New password must be at least 12 characters."},
+                                          status=400)
                 conn.execute(
                     "UPDATE admin SET password_hash = ? WHERE id = 1",
                     (hash_password(data["new"]),),
                 )
+                current_token = self.session_user()
+                conn.execute(
+                    "UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND token_hash != ?",
+                    (int(time.time()), token_hash(current_token or "")),
+                )
                 conn.commit()
                 conn.close()
+                audit_event("auth.password_change", request_id=self.headers.get("X-Request-ID", ""))
                 return self.send_json({"ok": True})
             if path == "/api/dnstt/restart":
                 service_action("dnstt", "restart")
@@ -1804,9 +2786,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.require_auth():
                 return
+            if not self.require_csrf():
+                return
             match = re.fullmatch(r"/api/users/(\d+)", path)
             if match:
                 delete_user(int(match.group(1)))
+                return self.send_json({"ok": True})
+            match = re.fullmatch(r"/api/packages/(\d+)", path)
+            if match:
+                delete_package(int(match.group(1)))
                 return self.send_json({"ok": True})
             match = re.fullmatch(r"/api/inbounds/(\d+)", path)
             if match:
@@ -2135,6 +3123,10 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3.5 20c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 5.2a3.5 3.5 0 0 1 0 5.9M17.8 15.4c1.5.7 2.4 2.2 2.7 4.6"/></svg>
         <span>Users</span>
       </div>
+      <div class="nav-item" data-page="packages">
+        <svg class="ic" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg>
+        <span>Packages</span>
+      </div>
       <div class="nav-item" data-page="online">
         <svg class="ic" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10.5 10.5 0 0 1 13 0M8.6 16a6 6 0 0 1 6.8 0"/><circle cx="12" cy="19.4" r="1.3" fill="currentColor"/></svg>
         <span>Online</span>
@@ -2148,6 +3140,10 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <div class="nav-item" data-page="services">
         <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
         <span>Services</span>
+      </div>
+      <div class="nav-item" data-page="audit">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        <span>Audit log</span>
       </div>
       <div class="nav-item" data-page="settings">
         <svg class="ic" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>
@@ -2250,6 +3246,43 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         </div>
       </section>
 
+      <!-- ===== Packages ===== -->
+      <section class="page" id="page-packages">
+        <div class="grid2">
+          <form class="card" id="packageForm">
+            <h3 id="packageFormTitle">Create service package</h3>
+            <input type="hidden" id="pkId">
+            <div class="field"><label>Package name</label><input id="pkName" required maxlength="48" placeholder="Starter 30D"></div>
+            <div class="fgrid">
+              <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="pkQuota" type="number" min="0" step="0.5" value="50"></div>
+              <div class="field"><label>Validity (days, 0 = unlimited)</label><input id="pkDays" type="number" min="0" max="3650" value="30"></div>
+              <div class="field"><label>IP limit (0 = unlimited)</label><input id="pkIp" type="number" min="0" max="10000" value="1"></div>
+            </div>
+            <div class="field"><label>Allowed protocols</label>
+              <div class="checks">
+                <label><input type="checkbox" class="pkProto" value="ssh" checked> SSH</label>
+                <label><input type="checkbox" class="pkProto" value="vless"> VLESS</label>
+                <label><input type="checkbox" class="pkProto" value="vmess"> VMess</label>
+                <label><input type="checkbox" class="pkProto" value="trojan"> Trojan</label>
+                <label><input type="checkbox" class="pkProto" value="shadowsocks"> Shadowsocks</label>
+                <label><input type="checkbox" class="pkProto" value="ovpn"> OpenVPN</label>
+              </div>
+            </div>
+            <button class="btn" type="submit">Create package</button>
+          </form>
+          <div class="card">
+            <h3>Package policy</h3>
+            <p class="muted">Applied package limits are snapshotted on each user. Editing a package later does not silently change existing customer entitlements. Assign the updated package explicitly to a user to apply its new policy.</p>
+          </div>
+        </div>
+        <div class="card" style="padding:8px 14px;margin-top:15px">
+          <div class="tblwrap"><table>
+            <thead><tr><th>Package</th><th>Protocols</th><th>Quota</th><th>Validity</th><th>IP limit</th><th>Assigned</th><th>Actions</th></tr></thead>
+            <tbody id="packageRows"></tbody>
+          </table></div>
+        </div>
+      </section>
+
       <!-- ===== Online ===== -->
       <section class="page" id="page-online">
         <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
@@ -2288,24 +3321,38 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <div class="svc-grid" id="serviceList" style="grid-template-columns:repeat(auto-fill,minmax(255px,1fr))"></div>
       </section>
 
+      <!-- ===== Audit log ===== -->
+      <section class="page" id="page-audit">
+        <div class="card">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:14px">
+            <div><h3>Security &amp; activity history</h3><div class="muted">Recent privileged actions and account events</div></div>
+            <button class="btn ghost small" type="button" onclick="loadAudit()">Refresh log</button>
+          </div>
+          <div class="tblwrap"><table>
+            <thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Outcome</th><th>Details</th></tr></thead>
+            <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading audit events…</td></tr></tbody>
+          </table></div>
+        </div>
+      </section>
+
       <!-- ===== Settings ===== -->
       <section class="page" id="page-settings">
         <form class="card" id="settingsForm">
           <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>Server &amp; client settings</h3>
           <div class="fgrid">
             <div class="field"><label>Public host / IP (shown to clients)</label><input name="server_host"></div>
-            <div class="field"><label>Panel port</label><input name="panel_port"></div>
-            <div class="field"><label>SSH port</label><input name="ssh_port"></div>
-            <div class="field"><label>WebSocket port</label><input name="ws_port"></div>
-            <div class="field"><label>Stunnel (WSS) port</label><input name="wss_port"></div>
-            <div class="field"><label>Xray VLESS port</label><input name="xray_port"></div>
-            <div class="field"><label>Xray VMess port</label><input name="xray_vmess_port"></div>
+            <div class="field"><label>Panel port (restart required)</label><input name="panel_port"><div class="muted" style="font-size:11px;margin-top:4px">Saved now; takes effect after restarting Nexo.</div></div>
+            <div class="field"><label>SSH port (managed by sshd)</label><input name="ssh_port" disabled></div>
+            <div class="field"><label>WebSocket port (managed by service)</label><input name="ws_port" disabled></div>
+            <div class="field"><label>Stunnel (WSS) port</label><input name="wss_port" disabled></div>
+            <div class="field"><label>Xray VLESS port</label><input name="xray_port" disabled></div>
+            <div class="field"><label>Xray VMess port</label><input name="xray_vmess_port" disabled></div>
             <div class="field"><label>Xray WS path</label><input name="xray_path"></div>
             <div class="field"><label>Cloudflare WS host</label><input name="cf_ws_host"></div>
             <div class="field"><label>Default SNI host (bug host)</label><input name="sni_host"></div>
-            <div class="field"><label>OpenVPN port</label><input name="ovpn_port"></div>
+            <div class="field"><label>OpenVPN port</label><input name="ovpn_port" disabled></div>
             <div class="field"><label>DNSTT domain (NS delegated)</label><input name="dnstt_domain"></div>
-            <div class="field"><label>DNSTT port</label><input name="dnstt_port"></div>
+            <div class="field"><label>DNSTT port</label><input name="dnstt_port" disabled></div>
             <div class="field"><label>Brand</label><input name="brand"></div>
             <div class="field full"><label>Telegram link</label><input name="telegram"></div>
           </div>
@@ -2361,12 +3408,13 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
     <input type="hidden" id="ufId">
     <div class="fgrid">
       <div class="field"><label>Username</label><input id="ufName" required></div>
+      <div class="field full"><label>Service package (optional)</label><select id="ufPackage"><option value="">Custom limits</option></select></div>
       <div class="field" id="ufPassWrap"><label>Password (SSH login)</label><input id="ufPass">
         <div class="muted" style="font-size:11.5px;margin-top:5px">Only needed for SSH. V2Ray clients connect with their UUID / link — no password.</div></div>
       <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="ufQuota" type="number" step="0.5" min="0" value="100"></div>
       <div class="field"><label>Validity (days)</label><input id="ufDays" type="number" min="1" value="30"></div>
       <div class="field"><label>IP limit (0 = unlimited)</label><input id="ufIpLimit" type="number" min="0" value="0"></div>
-      <div class="field"><label>Device / HWID limit (0 = unlimited)</label><input id="ufHwidLimit" type="number" min="0" value="0"></div>
+      <div class="field"><label>Device limit — not supported by current protocols</label><input id="ufHwidLimit" type="number" min="0" value="0" disabled></div>
       <div class="field full"><label>Note</label><input id="ufNote" placeholder="Customer name, phone, package…"></div>
     </div>
     <div class="field" style="margin-top:4px"><label>Protocols</label>
@@ -2377,8 +3425,8 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <label><input type="checkbox" class="ufProto" value="trojan"> Trojan</label>
         <label><input type="checkbox" class="ufProto" value="shadowsocks"> Shadowsocks</label>
         <label><input type="checkbox" class="ufProto" value="ovpn"> OpenVPN</label>
-        <label><input type="checkbox" class="ufProto" value="dnstt"> DNSTT</label>
       </div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Protocol removal is blocked until the matching account/certificate revoke flow is completed. Delete and recreate the user to remove a protocol safely.</div>
     </div>
     <div class="field" id="ufIbWrap" style="margin-top:10px;display:none"><label>Inbounds — this client is added to the ticked inbounds</label>
       <div class="ibpick" id="ufInbounds"></div>
@@ -2503,8 +3551,18 @@ function fmtBytes(b){ b = Number(b)||0; const u=["B","KB","MB","GB","TB"]; let i
 function fmtSpeed(b){ return fmtBytes(b)+"/s"; }
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show");
   clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2600); }
+function readCookie(name){
+  const part = document.cookie.split(";").map(x=>x.trim()).find(x=>x.startsWith(name+"="));
+  return part ? decodeURIComponent(part.slice(name.length+1)) : "";
+}
 async function api(path, options={}){
-  const res = await fetch(path, {headers:{"Content-Type":"application/json"}, ...options});
+  const method = (options.method || "GET").toUpperCase();
+  const headers = {"Content-Type":"application/json", ...(options.headers||{})};
+  if(method!=="GET" && path!=="/api/login"){
+    const csrf = readCookie("mpanel_csrf");
+    if(csrf) headers["X-CSRF-Token"] = csrf;
+  }
+  const res = await fetch(path, {...options, method, headers, credentials:"same-origin"});
   const data = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(data.error || ("HTTP "+res.status));
   return data;
@@ -2524,16 +3582,18 @@ document.addEventListener("click", e => {
 });
 
 /* ---------- navigation ---------- */
-const PAGE_TITLES = {dashboard:"Dashboard", users:"Users", online:"Online clients",
-  inbounds:"Inbounds", services:"Services", settings:"Settings"};
+const PAGE_TITLES = {dashboard:"Dashboard", users:"Users", packages:"Packages", online:"Online clients",
+  inbounds:"Inbounds", services:"Services", audit:"Audit log", settings:"Settings"};
 function gotoPage(name){
   $$(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.page===name));
   $$(".page").forEach(p => p.classList.toggle("active", p.id==="page-"+name));
   $("#pageTitle").textContent = PAGE_TITLES[name] || name;
   if(name==="users") loadUsers();
+  if(name==="packages") loadPackages();
   if(name==="online") loadOnline();
   if(name==="inbounds") loadInbounds();
   if(name==="services") loadServices();
+  if(name==="audit") loadAudit();
   if(name==="dashboard") loadDashboard();
 }
 $$(".nav-item").forEach(n => n.addEventListener("click", () => gotoPage(n.dataset.page)));
@@ -2553,12 +3613,12 @@ $("#logoutBtn").addEventListener("click", async () => {
   location.reload();
 });
 $("#refreshBtn").addEventListener("click", () => {
-  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); toast("Refreshed.");
+  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); loadAudit(); toast("Refreshed.");
 });
 function showApp(){
   $("#loginView").style.display = "none";
   $("#appView").style.display = "block";
-  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); loadOnline();
+  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); loadOnline(); loadPackages();
 }
 
 /* ---------- online clients ---------- */
@@ -2807,6 +3867,60 @@ document.addEventListener("DOMContentLoaded", () => {
   cv.addEventListener("mouseleave", () => { HOVER_IDX = -1; tip.style.display = "none"; drawChart(); });
 });
 
+/* ---------- packages ---------- */
+let PACKAGES = [];
+async function loadPackages(){
+  try{
+    const d = await api("/api/packages");
+    PACKAGES = d.packages || [];
+    $("#packageRows").innerHTML = PACKAGES.map(p => {
+      const assigned = USERS.filter(u => u.package_id === p.id).length;
+      return '<tr><td><b>'+esc(p.name)+'</b></td>'
+        +'<td>'+p.protocols.map(x=>'<span class="pill proto">'+esc(x)+'</span>').join(" ")+'</td>'
+        +'<td>'+esc(p.quota_gb ? p.quota_gb+" GB" : "Unlimited")+'</td>'
+        +'<td>'+esc(p.validity_days ? p.validity_days+" days" : "Unlimited")+'</td>'
+        +'<td>'+esc(p.ip_limit ? p.ip_limit : "Unlimited")+'</td>'
+        +'<td>'+assigned+'</td><td><div class="rowacts"><button class="btn ghost small" onclick="editPackage('+p.id+')">Edit</button>'
+        +'<button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></div></td></tr>';
+    }).join("") || '<tr><td colspan="7" class="muted">No packages created.</td></tr>';
+    $("#ufPackage").innerHTML = '<option value="">Custom limits</option>' +
+      PACKAGES.filter(p=>p.enabled).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join("");
+  }catch(e){ toast(e.message); }
+}
+$("#packageForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const protocols = $(".pkProto").filter(x=>x.checked).map(x=>x.value);
+  if(!protocols.length){ toast("Select at least one protocol."); return; }
+  try{
+    const id = $("#pkId").value;
+    await api(id ? "/api/packages/"+id : "/api/packages", {method:"POST", body:JSON.stringify({
+      name:$("#pkName").value.trim(), quota_gb:Number($("#pkQuota").value||0),
+      validity_days:Number($("#pkDays").value||0), ip_limit:Number($("#pkIp").value||0),
+      protocols
+    })});
+    $("#packageForm").reset(); $("#pkId").value = "";
+    $("#packageFormTitle").textContent = "Create service package";
+    toast(id ? "Package updated." : "Package created."); loadPackages();
+  }catch(err){ toast(err.message); }
+});
+window.editPackage = id => {
+  const p = PACKAGES.find(x=>x.id===id); if(!p) return;
+  $("#pkId").value = p.id; $("#pkName").value = p.name;
+  $("#pkQuota").value = p.quota_gb || 0;
+  $("#pkDays").value = p.validity_days || 0;
+  $("#pkIp").value = p.ip_limit || 0;
+  $(".pkProto").forEach(x=>x.checked=p.protocols.includes(x.value));
+  $("#packageFormTitle").textContent = "Edit package — " + p.name;
+  gotoPage("packages");
+  window.scrollTo({top:0,behavior:"smooth"});
+};
+window.deletePackage = async id => {
+  const p = PACKAGES.find(x=>x.id===id);
+  if(!confirm("Delete package "+(p?p.name:id)+"? Assigned packages cannot be deleted.")) return;
+  try{ await api("/api/packages/"+id,{method:"DELETE"}); toast("Package deleted."); loadPackages(); }
+  catch(err){ toast(err.message); }
+};
+
 /* ---------- users ---------- */
 let USERS = [];
 function daysLeft(exp){
@@ -2896,7 +4010,8 @@ $$(".ufProto").forEach(c => c.addEventListener("change", () => {
 $("#newUserBtn").addEventListener("click", () => {
   $("#userForm").reset();
   $("#ufId").value = "";
-  $$(".ufProto").forEach(c => c.checked = c.value==="ssh");
+  $("#ufPackage").value = "";
+  $(".ufProto").forEach(c => c.checked = c.value==="ssh");
   UF_IB_SELECTED = null; syncUfForm();
   $("#userModalTitle").textContent = "New user";
   $("#userModalWrap").style.display = "flex";
@@ -2905,6 +4020,7 @@ $("#userCancel").addEventListener("click", () => $("#userModalWrap").style.displ
 window.editUser = id => {
   const u = USERS.find(x => x.id===id); if(!u) return;
   $("#ufId").value = u.id; $("#ufName").value = u.username;
+  $("#ufPackage").value = u.package_id || "";
   $("#ufPass").value = ""; $("#ufPass").required = false;
   $("#ufPass").placeholder = "Leave blank to keep current";
   $("#ufQuota").value = u.quota_gb ?? 0; $("#ufDays").value = 30;
@@ -2920,7 +4036,8 @@ $("#userForm").addEventListener("submit", async e => {
   e.preventDefault();
   const id = $("#ufId").value;
   const payload = {username: $("#ufName").value.trim(),
-    protocols: $$(".ufProto").filter(c => c.checked).map(c => c.value),
+    protocols: $(".ufProto").filter(c => c.checked).map(c => c.value),
+    package_id: $("#ufPackage").value || null,
     quota_gb: parseFloat($("#ufQuota").value||0), days: parseInt($("#ufDays").value||30),
     ip_limit: parseInt($("#ufIpLimit").value||0), hwid_limit: parseInt($("#ufHwidLimit").value||0),
     note: $("#ufNote").value};
@@ -2933,9 +4050,15 @@ $("#userForm").addEventListener("submit", async e => {
     payload.inbound_ids = (boxes.length && checked.length === boxes.length) ? [] : checked;
   }
   try{
-    await api(id ? "/api/users/"+id : "/api/users",
+    const result = await api(id ? "/api/users/"+id : "/api/users",
       {method:"POST", body: JSON.stringify(payload)});
     $("#userModalWrap").style.display = "none";
+    if(result.user && result.user.credential_once){
+      const secret = result.user.credential_once;
+      delete result.user.credential_once;
+      alert("One-time credential for " + result.user.username + ":\\n\\n" + secret +
+        "\\n\\nCopy it now. It will not be shown again.");
+    }
     toast(id ? "User updated." : "User created."); loadUsers(); loadDashboard();
   }catch(err){ toast(err.message); }
 });
@@ -2956,11 +4079,12 @@ window.showInfo = id => {
   $("#infoTitle").textContent = "User info — " + u.username;
   const kv = (k,v,copy) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v mono">${esc(v)}</div>${copy?`<button class="copy" data-copy="${esc(v)}">Copy</button>`:""}</div>`;
   let accountHtml = '<div class="info-sec"><h4>Account</h4>'
-    + kv("Username", u.username, true) + kv("Password", u.password, true)
+    + kv("Username", u.username, true)
+    + kv("Package", (u.package_snapshot && u.package_snapshot.name) || "Custom")
     + (u.uuid ? kv("UUID", u.uuid, true) : "")
     + kv("Expires", u.expire_date || "Never") + kv("Traffic", fmtBytes(u.used_bytes) + " / " + (u.quota_bytes?fmtBytes(u.quota_bytes):"Unlimited"))
     + kv("IP limit", u.ip_limit ? u.ip_limit+" IPs" : "Unlimited")
-    + kv("Device (HWID) limit", u.hwid_limit ? String(u.hwid_limit) : "Unlimited")
+    + kv("Device limit", "Not supported — use concurrent session / IP limits")
     + ((u.hwids&&u.hwids.length) ? kv("Registered HWIDs", u.hwids.join(", ")) : "")
     + ((u.online_ips&&u.online_ips.length) ? kv("Online IPs", u.online_ips.join(", ")) : "")
     + "</div>";
@@ -3155,6 +4279,22 @@ window.removeInbound = async id => {
 };
 
 /* ---------- services ---------- */
+async function loadAudit(){
+  try{
+    const d = await api("/api/audit");
+    const events = d.events || [];
+    $("#auditRows").innerHTML = events.map(e => {
+      const details = JSON.stringify(e.details || {});
+      const target = [e.target_type, e.target_id].filter(Boolean).join(" · ") || "—";
+      const outcome = e.outcome === "success" ? '<span class="pill ok">Success</span>'
+        : '<span class="pill bad">'+esc(e.outcome)+'</span>';
+      return '<tr><td class="mono">'+esc((e.created_at||"").replace("T"," "))+'</td>'
+        +'<td><b>'+esc(e.action)+'</b></td><td>'+esc(target)+'</td>'
+        +'<td>'+outcome+'</td><td class="mono" style="max-width:320px;white-space:normal;overflow-wrap:anywhere">'+esc(details)+'</td></tr>';
+    }).join("") || '<tr><td colspan="5" class="muted">No audit events yet.</td></tr>';
+  }catch(e){ $("#auditRows").innerHTML = '<tr><td colspan="5" class="muted">'+esc(e.message)+'</td></tr>'; }
+}
+
 async function loadServices(){
   try{
     const d = await api("/api/services");
@@ -3162,9 +4302,13 @@ async function loadServices(){
   }catch(e){}
 }
 window.svc = async (id, action) => {
-  try{ await api(`/api/services/${id}/${action}`, {method:"POST"});
-    toast(id + " " + action + " sent."); setTimeout(()=>{ loadServices(); loadDashboard(); }, 600); }
-  catch(err){ toast(err.message); }
+  toast(`${id}: ${action} in progress…`);
+  try{
+    const result = await api(`/api/services/${encodeURIComponent(id)}/${action}`, {method:"POST"});
+    const state = result.services?.find(item => item.id === id);
+    toast(state ? `${state.name}: ${state.active ? "Running" : "Stopped"}` : `${id}: ${action} completed`);
+  }catch(err){ toast(err.message); }
+  finally{ await Promise.all([loadServices(), loadDashboard()]); }
 };
 
 /* ---------- settings ---------- */
@@ -3198,6 +4342,7 @@ $("#passwordForm").addEventListener("submit", async e => {
     tick++;
     if(tick % 3 === 0){
       loadOnline();
+      if($("#page-packages").classList.contains("active")) loadPackages();
       if($("#page-users").classList.contains("active")) loadUsers();
     }
   }, 2000);

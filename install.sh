@@ -1544,10 +1544,16 @@ def validate_package(data):
         raise ValueError("Package inbound_ids must be an array.")
     valid_ids = {ib["id"] for ib in list_inbounds()}
     normalized_ids = []
+    inbound_map = {ib["id"]: ib for ib in list_inbounds()}
     for item in inbound_ids:
         if isinstance(item, bool) or not str(item).isdigit() or int(item) not in valid_ids:
             raise ValueError(f"Package references unknown inbound: {item}.")
-        normalized_ids.append(int(item))
+        inbound_id = int(item)
+        if inbound_map[inbound_id]["protocol"] not in protocols:
+            raise ValueError(
+                f"Inbound {inbound_id} uses {inbound_map[inbound_id]['protocol']}, "
+                "which is not enabled in this package.")
+        normalized_ids.append(inbound_id)
     return {
         "name": name.strip(),
         "quota_bytes": int(round(quota_gb * GB)),

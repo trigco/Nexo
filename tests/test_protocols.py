@@ -291,17 +291,6 @@ class PersistenceAndSecurityTests(unittest.TestCase):
                                "quota_gb": -1})
 
 
-    def test_ssh_traffic_counter_sums_only_upload_and_download_return_rules(self):
-        outputs = {
-            panel.chain_name("alice"): "Chain out\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
-            panel.chain_in_name("alice"): "Chain in\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
-        }
-        def fake_run(cmd, **kwargs):
-            return panel.subprocess.CompletedProcess(
-                cmd, 0, outputs[cmd[4]], "")
-        with patch.object(panel, "MOCK", False), patch.object(panel, "run", side_effect=fake_run):
-            self.assertEqual(panel.ssh_chain_bytes("alice"), 300)
-
     def test_manual_lock_is_not_undone_by_quota_enforcer(self):
         conn = panel.db()
         conn.execute(

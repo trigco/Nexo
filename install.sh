@@ -43,8 +43,8 @@ mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 BACKUP_PATHS=()
 for path in etc/mpanel usr/local/etc/xray etc/openvpn etc/stunnel-ssh \
-            etc/ssh/sshd_config etc/systemd/system/mpanel.service \
-            etc/systemd/system/wsproxy.service; do
+            etc/ssh/sshd_config usr/local/bin/nexo-ovpn-client-connect.sh \
+            etc/systemd/system/mpanel.service etc/systemd/system/wsproxy.service; do
   [ -e "/$path" ] && BACKUP_PATHS+=("$path")
 done
 if [ "${#BACKUP_PATHS[@]}" -gt 0 ]; then
@@ -4895,6 +4895,8 @@ verb 3
 EOF
 systemctl enable --now openvpn-server@server 2>/dev/null || \
   echo "    WARNING: OpenVPN service did not start; check journalctl -u openvpn-server@server."
+systemctl restart openvpn-server@server 2>/dev/null || \
+  echo "    WARNING: OpenVPN restart failed; disabled-user admission hook may not be active."
 
 echo "==> Installing DNSTT (best effort)..."
 echo "${DNSTT_DOMAIN_DEFAULT}" > /etc/dnstt/domain

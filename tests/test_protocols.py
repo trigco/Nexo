@@ -227,23 +227,27 @@ class PersistenceAndSecurityTests(unittest.TestCase):
                            if v.startswith("mpanel_csrf="))
         csrf = csrf_cookie.split("=", 1)[1]
 
-        conn.request("POST", "/api/settings", body="{}",
-                     headers={"Content-Type": "application/json",
-                              "Cookie": session_cookie + "; " + csrf_cookie,
-                              "Origin": f"http://127.0.0.1:{port}"})
-        denied = conn.getresponse()
+        conn.close()
+        denied_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        denied_conn.request("POST", "/api/settings", body="{}",
+                            headers={"Content-Type": "application/json",
+                                     "Cookie": session_cookie + "; " + csrf_cookie,
+                                     "Origin": f"http://127.0.0.1:{port}"})
+        denied = denied_conn.getresponse()
         self.assertEqual(denied.status, 403)
         denied.read()
+        denied_conn.close()
 
-        conn.request("POST", "/api/settings", body="{}",
-                     headers={"Content-Type": "application/json",
-                              "Cookie": session_cookie + "; " + csrf_cookie,
-                              "X-CSRF-Token": csrf,
-                              "Origin": f"http://127.0.0.1:{port}"})
-        allowed = conn.getresponse()
+        allowed_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        allowed_conn.request("POST", "/api/settings", body="{}",
+                             headers={"Content-Type": "application/json",
+                                      "Cookie": session_cookie + "; " + csrf_cookie,
+                                      "X-CSRF-Token": csrf,
+                                      "Origin": f"http://127.0.0.1:{port}"})
+        allowed = allowed_conn.getresponse()
         self.assertEqual(allowed.status, 200)
         allowed.read()
-        conn.close()
+        allowed_conn.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
@@ -288,16 +292,14 @@ class PersistenceAndSecurityTests(unittest.TestCase):
 
 
     def test_ssh_traffic_counter_sums_only_upload_and_download_return_rules(self):
-        outputs = [
-            "Chain out (1 references)\n pkts bytes target\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
-            "Chain in (1 references)\n pkts bytes target\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
-        ]
-        completed = [
-            panel.subprocess.CompletedProcess([], 0, outputs[0], ""),
-            panel.subprocess.CompletedProcess([], 0, outputs[1], ""),
-        ]
-        with patch.object(panel, "MOCK", False), patch.object(
-                panel, "run", side_effect=completed):
+        outputs = {
+            panel.chain_name("alice"): "Chain out\\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
+            panel.chain_in_name("alice"): "Chain in\\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
+        }
+        def fake_run(cmd, **kwargs):
+            return panel.subprocess.CompletedProcess(
+                cmd, 0, outputs[cmd[4]], "")
+        with patch.object(panel, "MOCK", False), patch.object(panel, "run", side_effect=fake_run):
             self.assertEqual(panel.ssh_chain_bytes("alice"), 300)
 
     def test_manual_lock_is_not_undone_by_quota_enforcer(self):

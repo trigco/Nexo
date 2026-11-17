@@ -3069,7 +3069,8 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <section class="page" id="page-packages">
         <div class="grid2">
           <form class="card" id="packageForm">
-            <h3>Create service package</h3>
+            <h3 id="packageFormTitle">Create service package</h3>
+            <input type="hidden" id="pkId">
             <div class="field"><label>Package name</label><input id="pkName" required maxlength="48" placeholder="Starter 30D"></div>
             <div class="fgrid">
               <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="pkQuota" type="number" min="0" step="0.5" value="50"></div>
@@ -3697,7 +3698,8 @@ async function loadPackages(){
         +'<td>'+esc(p.quota_gb ? p.quota_gb+" GB" : "Unlimited")+'</td>'
         +'<td>'+esc(p.validity_days ? p.validity_days+" days" : "Unlimited")+'</td>'
         +'<td>'+esc(p.ip_limit ? p.ip_limit : "Unlimited")+'</td>'
-        +'<td>'+assigned+'</td><td><button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></td></tr>';
+        +'<td>'+assigned+'</td><td><div class="rowacts"><button class="btn ghost small" onclick="editPackage('+p.id+')">Edit</button>'
+        +'<button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></div></td></tr>';
     }).join("") || '<tr><td colspan="7" class="muted">No packages created.</td></tr>';
     $("#ufPackage").innerHTML = '<option value="">Custom limits</option>' +
       PACKAGES.filter(p=>p.enabled).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join("");
@@ -3708,15 +3710,28 @@ $("#packageForm").addEventListener("submit", async e => {
   const protocols = $(".pkProto").filter(x=>x.checked).map(x=>x.value);
   if(!protocols.length){ toast("Select at least one protocol."); return; }
   try{
-    await api("/api/packages", {method:"POST", body:JSON.stringify({
+    const id = $("#pkId").value;
+    await api(id ? "/api/packages/"+id : "/api/packages", {method:"POST", body:JSON.stringify({
       name:$("#pkName").value.trim(), quota_gb:Number($("#pkQuota").value||0),
       validity_days:Number($("#pkDays").value||0), ip_limit:Number($("#pkIp").value||0),
       protocols, inbound_ids:[]
     })});
-    $("#packageForm").reset();
-    toast("Package created."); loadPackages();
+    $("#packageForm").reset(); $("#pkId").value = "";
+    $("#packageFormTitle").textContent = "Create service package";
+    toast(id ? "Package updated." : "Package created."); loadPackages();
   }catch(err){ toast(err.message); }
 });
+window.editPackage = id => {
+  const p = PACKAGES.find(x=>x.id===id); if(!p) return;
+  $("#pkId").value = p.id; $("#pkName").value = p.name;
+  $("#pkQuota").value = p.quota_gb || 0;
+  $("#pkDays").value = p.validity_days || 0;
+  $("#pkIp").value = p.ip_limit || 0;
+  $(".pkProto").forEach(x=>x.checked=p.protocols.includes(x.value));
+  $("#packageFormTitle").textContent = "Edit package — " + p.name;
+  gotoPage("packages");
+  window.scrollTo({top:0,behavior:"smooth"});
+};
 window.deletePackage = async id => {
   const p = PACKAGES.find(x=>x.id===id);
   if(!confirm("Delete package "+(p?p.name:id)+"? Assigned packages cannot be deleted.")) return;

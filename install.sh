@@ -5057,17 +5057,27 @@ echo "==> Installing DNSTT (best effort)..."
 echo "${DNSTT_DOMAIN_DEFAULT}" > /etc/dnstt/domain
 if [ ! -x /usr/local/bin/dnstt-server ]; then
   rm -rf /opt/dnstt-src
-  if GIT_TERMINAL_PROMPT=0 git clone --depth 1 https://www.bamsoftware.com/git/dnstt.git /opt/dnstt-src >/dev/null 2>&1 \
-     && cd /opt/dnstt-src/dnstt-server && go build -o /usr/local/bin/dnstt-server . >/dev/null 2>&1; then
-    echo "    DNSTT built."
+  echo "    Go toolchain: $(go version 2>&1 || echo unavailable)"
+  if GIT_TERMINAL_PROMPT=0 git clone --depth 1 https://www.bamsoftware.com/git/dnstt.git /opt/dnstt-src; then
+    if (cd /opt/dnstt-src/dnstt-server && go build -trimpath -o /usr/local/bin/dnstt-server .); then
+      chmod 755 /usr/local/bin/dnstt-server
+      echo "    DNSTT built."
+    else
+      echo "    WARNING: DNSTT build failed. Build output above; service will remain disabled."
+    fi
   else
-    echo "    WARNING: DNSTT build failed; the panel will show it as not installed."
+    echo "    WARNING: DNSTT source clone failed. Git output above; service will remain disabled."
   fi
-  cd /
 fi
-if [ -x /usr/local/bin/dnstt-server ] && [ ! -f /etc/dnstt/server.key ]; then
-  /usr/local/bin/dnstt-server -gen-key -privkey-file /etc/dnstt/server.key \
-    -pubkey-file /etc/dnstt/server.pub >/dev/null 2>&1 || true
+if [ -x /usr/local/bin/dnstt-server ] && { [ ! -s /etc/dnstt/server.key ] || [ ! -s /etc/dnstt/server.pub ]; }; then
+  if /usr/local/bin/dnstt-server -gen-key -privkey-file /etc/dnstt/server.key \
+      -pubkey-file /etc/dnstt/server.pub; then
+    chmod 600 /etc/dnstt/server.key
+    chmod 644 /etc/dnstt/server.pub
+  else
+    echo "    WARNING: DNSTT key generation failed; refusing to enable DNSTT."
+    rm -f /etc/dnstt/server.key /etc/dnstt/server.pub
+  fi
 fi
 cat > /etc/systemd/system/dnstt.service <<'EOF'
 [Unit]

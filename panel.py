@@ -328,8 +328,9 @@ def record_login_failure(source_key):
         failures, started = 1, now
     else:
         failures, started = int(row["failures"]) + 1, int(row["window_started"])
-    locked_until = (now + min(900, 30 * (2 ** min(max(failures - LOGIN_MAX_FAILURES, 0), 5)))\n                    if failures >= LOGIN_MAX_FAILURES else 0)
-    conn.execute(
+    locked_until = 0
+    if failures >= LOGIN_MAX_FAILURES:
+        locked_until = now + min(900, 30 * (2 ** min(max(failures - LOGIN_MAX_FAILURES, 0), 5)))
         "INSERT INTO login_attempts (source_key, failures, window_started, locked_until) "
         "VALUES (?, ?, ?, ?) ON CONFLICT(source_key) DO UPDATE SET "
         "failures=excluded.failures, window_started=excluded.window_started, "

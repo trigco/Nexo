@@ -37,7 +37,7 @@
 
 ### Phase 5 — Services and OpenVPN
 - Safe service allowlist and proper installed/active/failed states.
-- OpenVPN profile generation, per-client cert issuance/revocation and status telemetry.
+- OpenVPN profile generation, per-client cert issuance/revocation and status telemetry. Disabled/expired/quota-locked users are blocked on new connections, but active sessions are not yet disconnected at lock time.
 - SSH account/key management with preservation of existing host access.
 - Diagnostics and log tailing with sensitive-data redaction.
 
@@ -58,11 +58,10 @@
 
 - UI and backend are embedded in `panel.py`; there is no module separation.
 - HTTP API is implemented with `BaseHTTPRequestHandler`.
-- Sessions are stored in process memory and disappear on restart.
-- Session cookie uses HttpOnly and SameSite=Lax but is not marked Secure in the shown login handler.
-- No CSRF token or login throttling is visible in the inspected route code.
-- Services are controlled through an allowlist, but the custom panel process itself is managed as root by the current installer.
-- User rows retain SSH passwords in clear text in SQLite, and public user serialization exposes password. This must be removed through a migration and credential rotation workflow.
+- Sessions are stored as hashes in SQLite and survive process restarts; logout revokes the session. CSRF, same-origin write checks, secure cookie attributes and login throttling are implemented.
+- The custom panel process is still privileged in the current installer; the control-plane/agent split and RBAC remain unfinished.
+- New SSH-only credentials are not persisted in plaintext and are returned once at creation/reset. Existing legacy records still need a controlled migration and credential rotation workflow.
+- Trojan/Shadowsocks secrets remain in the local database; encrypted-at-rest secret storage is not yet implemented.
 - Device/HWID fields exist, but the inspected enforcer applies SSH session/IP and Xray IP filtering; that is not reliable hardware identity enforcement.
 - Current SSH per-user iptables accounting chain has a single OUTPUT jump to per-user chains. This design needs packet-path validation before traffic totals are trusted.
 - Current OpenVPN setup uses one shared server and generated client certificates; verify revocation, client isolation, status accounting and profile correctness on a real host.
@@ -93,3 +92,12 @@ Still not implemented: multi-admin RBAC, privileged agent separation, a full out
 
 
 - OpenVPN users now receive unique certificate common names; disabled/expired/quota-exhausted names are atomically published to a fail-closed client-connect hook. Existing active sessions are not yet killed at quota lock, and per-protocol removal remains blocked until a complete revoke workflow is implemented.
+
+
+## Additional 2026-11-17 implementation notes
+
+- Xray config publication now preserves the `root:xray` ownership and `0640` mode expected by the service account, including rollback.
+- SSH-only create/edit/renew/delete paths no longer invoke Xray sync; Xray-backed users still require a successful sync.
+- Service action responses are based on verified systemd state, not merely a successful systemctl invocation.
+- DNSTT remains a blocker: the current installer only attempts a best-effort build and its service forwards to SSH port 22. Shared SSH/VLESS transport multiplexing and safe UDP/53 binding have not been implemented.
+- The latest feature branch commits require a fresh CI run and disposable Ubuntu 24.04 integration test before release.

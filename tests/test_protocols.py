@@ -309,6 +309,33 @@ class PersistenceAndSecurityTests(unittest.TestCase):
         self.assertEqual(row["enabled"], 0)
         self.assertEqual(row["auto_locked"], 0)
 
+    def test_package_assignment_snapshots_policy_and_blocks_assigned_delete(self):
+        package_id = panel.create_package({
+            "name": "Starter 30D", "quota_gb": 25, "validity_days": 30,
+            "ip_limit": 1, "protocols": ["ssh", "vless"], "inbound_ids": [],
+        })
+        created = panel.create_user({
+            "username": "packageuser", "package_id": package_id,
+            "password": "initial-secret-123",
+        })
+        self.assertEqual(created["package_id"], package_id)
+        self.assertEqual(created["package_snapshot"]["name"], "Starter 30D")
+        self.assertEqual(created["quota_gb"], 25)
+        self.assertEqual(created["protocols"], ["ssh", "vless"])
+        with self.assertRaises(ValueError):
+            panel.delete_package(package_id)
+
+        panel.update_package(package_id, {
+            "quota_gb": 40, "validity_days": 60,
+        })
+        conn = panel.db()
+        row = conn.execute("SELECT quota_bytes, package_snapshot_json FROM users "
+                           "WHERE username='packageuser'").fetchone()
+        conn.close()
+        self.assertEqual(row["quota_bytes"], 25 * panel.GB)
+        self.assertEqual(json.loads(row["package_snapshot_json"])["quota_bytes"],
+                         25 * panel.GB)
+
     def test_sessions_are_persisted_as_hashes(self):
         token = "raw-session-token"
         csrf = "raw-csrf-token"

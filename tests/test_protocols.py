@@ -308,6 +308,29 @@ class PersistenceAndSecurityTests(unittest.TestCase):
         self.assertEqual(created["username"], "sshwithoutxray")
         sync.assert_not_called()
 
+    def test_ssh_only_user_update_does_not_depend_on_xray(self):
+        created = panel.create_user({
+            "username": "sshedit", "protocols": ["ssh"],
+            "password": "initial-secret-123",
+        })
+        with patch.object(panel, "xray_sync_users",
+                          side_effect=RuntimeError("Xray is unavailable")) as sync:
+            updated = panel.update_user(created["id"], {"note": "SSH account"})
+        self.assertEqual(updated["note"], "SSH account")
+        sync.assert_not_called()
+
+    def test_ssh_only_user_delete_does_not_depend_on_xray(self):
+        created = panel.create_user({
+            "username": "sshdelete", "protocols": ["ssh"],
+            "password": "initial-secret-123",
+        })
+        with patch.object(panel, "xray_sync_users",
+                          side_effect=RuntimeError("Xray is unavailable")) as sync, \
+             patch.object(panel, "ssh_user_exists", return_value=False):
+            panel.delete_user(created["id"])
+        sync.assert_not_called()
+        self.assertEqual(panel.list_users_as_rows(), [])
+
     def test_vless_user_still_requires_xray_sync(self):
         with patch.object(panel, "xray_sync_users",
                           side_effect=RuntimeError("Xray config rejected")) as sync:

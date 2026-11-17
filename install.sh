@@ -485,6 +485,11 @@ def validate_settings(data):
     if unknown:
         raise ValueError("Unknown setting key: " + ", ".join(sorted(unknown)))
     clean = {}
+    current_settings = get_settings()
+    service_managed_ports = {
+        "ssh_port", "ws_port", "wss_port", "xray_port",
+        "xray_vmess_port", "ovpn_port", "dnstt_port",
+    }
     port_keys = {
         "panel_port", "ssh_port", "ws_port", "wss_port", "xray_port",
         "xray_vmess_port", "ovpn_port", "dnstt_port",
@@ -492,6 +497,9 @@ def validate_settings(data):
     host_keys = {"server_host", "cf_ws_host", "sni_host", "dnstt_domain"}
     for key, value in data.items():
         if key in port_keys:
+            if key in service_managed_ports and str(value) != str(current_settings.get(key, "")):
+                raise ValueError(
+                    f"{key} is read-only until its service configuration is managed by Nexo.")
             if isinstance(value, bool):
                 raise ValueError(f"{key} must be a valid TCP/UDP port.")
             try:
@@ -511,8 +519,8 @@ def validate_settings(data):
                 raise ValueError("xray_path must be a safe absolute URL path.")
             clean[key] = value
         elif key == "ovpn_proto":
-            if value not in {"udp", "tcp", "udp6", "tcp6"}:
-                raise ValueError("ovpn_proto must be udp, tcp, udp6 or tcp6.")
+            if value != "udp":
+                raise ValueError("OpenVPN transport is currently fixed to UDP by the installed service.")
             clean[key] = value
         elif key == "brand":
             if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9 _-]{2,32}", value):
@@ -3360,18 +3368,18 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
           <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>Server &amp; client settings</h3>
           <div class="fgrid">
             <div class="field"><label>Public host / IP (shown to clients)</label><input name="server_host"></div>
-            <div class="field"><label>Panel port</label><input name="panel_port"></div>
-            <div class="field"><label>SSH port</label><input name="ssh_port"></div>
-            <div class="field"><label>WebSocket port</label><input name="ws_port"></div>
-            <div class="field"><label>Stunnel (WSS) port</label><input name="wss_port"></div>
-            <div class="field"><label>Xray VLESS port</label><input name="xray_port"></div>
-            <div class="field"><label>Xray VMess port</label><input name="xray_vmess_port"></div>
+            <div class="field"><label>Panel port (restart required)</label><input name="panel_port"><div class="muted" style="font-size:11px;margin-top:4px">Saved now; takes effect after restarting Nexo.</div></div>
+            <div class="field"><label>SSH port (managed by sshd)</label><input name="ssh_port" disabled></div>
+            <div class="field"><label>WebSocket port (managed by service)</label><input name="ws_port" disabled></div>
+            <div class="field"><label>Stunnel (WSS) port</label><input name="wss_port" disabled></div>
+            <div class="field"><label>Xray VLESS port</label><input name="xray_port" disabled></div>
+            <div class="field"><label>Xray VMess port</label><input name="xray_vmess_port" disabled></div>
             <div class="field"><label>Xray WS path</label><input name="xray_path"></div>
             <div class="field"><label>Cloudflare WS host</label><input name="cf_ws_host"></div>
             <div class="field"><label>Default SNI host (bug host)</label><input name="sni_host"></div>
-            <div class="field"><label>OpenVPN port</label><input name="ovpn_port"></div>
+            <div class="field"><label>OpenVPN port</label><input name="ovpn_port" disabled></div>
             <div class="field"><label>DNSTT domain (NS delegated)</label><input name="dnstt_domain"></div>
-            <div class="field"><label>DNSTT port</label><input name="dnstt_port"></div>
+            <div class="field"><label>DNSTT port</label><input name="dnstt_port" disabled></div>
             <div class="field"><label>Brand</label><input name="brand"></div>
             <div class="field full"><label>Telegram link</label><input name="telegram"></div>
           </div>

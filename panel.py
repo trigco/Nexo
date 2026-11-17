@@ -456,11 +456,13 @@ USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 
 
 def chain_name(username):
-    return f"MP_{username}"[:28]
+    suffix = hashlib.sha256(username.encode()).hexdigest()[:6]
+    return f"MP_{username[:18]}_{suffix}"[:28]
 
 
 def chain_in_name(username):
-    return f"MI_{username}"[:28]
+    suffix = hashlib.sha256(username.encode()).hexdigest()[:6]
+    return f"MI_{username[:18]}_{suffix}"[:28]
 
 
 def ssh_mark(username):
@@ -498,6 +500,13 @@ def ssh_ensure_chain(username):
     """
     mark = ssh_mark(username)
     out_chain, in_chain = chain_name(username), chain_in_name(username)
+    # Remove legacy filter-table chains created by older panel versions.
+    legacy = f"MP_{username}"[:28]
+    if not MOCK:
+        while run(["iptables", "-D", "OUTPUT", "-j", legacy]).returncode == 0:
+            pass
+        run(["iptables", "-F", legacy])
+        run(["iptables", "-X", legacy])
     run(["iptables", "-t", "mangle", "-N", out_chain])
     run(["iptables", "-t", "mangle", "-F", out_chain])
     run(["iptables", "-t", "mangle", "-N", in_chain])
@@ -541,6 +550,10 @@ def ssh_delete_user(username):
         run(["iptables", "-t", "mangle", "-D", parent, "-j", chain])
         run(["iptables", "-t", "mangle", "-F", chain])
         run(["iptables", "-t", "mangle", "-X", chain])
+    legacy = f"MP_{username}"[:28]
+    run(["iptables", "-D", "OUTPUT", "-j", legacy])
+    run(["iptables", "-F", legacy])
+    run(["iptables", "-X", legacy])
 
 
 def ssh_set_enabled(username, enabled):

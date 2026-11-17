@@ -2028,7 +2028,8 @@ def update_user(user_id, data):
     conn.commit()
     fresh = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    if XRAY_USER_PROTOCOLS & set(protocols):
+        xray_sync_users(list_users_as_rows())
     public = user_public(fresh, get_settings())
     if credential_once:
         public["credential_once"] = credential_once
@@ -2088,7 +2089,8 @@ def renew_user(user_id, days, reset_traffic):
     if "ssh" in row["protocols"].split(",") and ssh_user_exists(row["username"]):
         run(["chage", "-E", row["expire_date"], row["username"]])
         ssh_set_enabled(row["username"], True)
-    xray_sync_users(list_users_as_rows())
+    if XRAY_USER_PROTOCOLS & set(row["protocols"].split(",")):
+        xray_sync_users(list_users_as_rows())
     audit_event("user.renew", "user", user_id,
                 details={"days": days, "traffic_reset": bool(reset_traffic)})
     return user_public(fresh, get_settings())
@@ -2272,7 +2274,8 @@ def delete_user(user_id):
     conn.commit()
     conn.close()
     try:
-        xray_sync_users(list_users_as_rows())
+        if XRAY_USER_PROTOCOLS & set(protocols):
+            xray_sync_users(list_users_as_rows())
         if "ssh" in protocols and ssh_user_exists(row["username"]):
             ssh_delete_user(row["username"])
         if "ovpn" in protocols:

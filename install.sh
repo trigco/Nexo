@@ -229,6 +229,7 @@ def db():
 def init_db():
     os.makedirs(BASE, exist_ok=True)
     conn = db()
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS admin (
@@ -357,7 +358,6 @@ def init_db():
         print(f"Admin created: user 'admin', password '{initial}'", flush=True)
         print("Change it after first login (Settings) or with --set-admin.", flush=True)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at)")
-    conn.execute("PRAGMA journal_mode = WAL")
     conn.commit()
     conn.close()
     try:

@@ -91,6 +91,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import uuid as uuidlib
 from datetime import date, datetime, timedelta
@@ -1138,6 +1139,7 @@ def update_inbound(inbound_id, data):
     )
     conn.commit()
     conn.close()
+    write_ovpn_access_list()
     try:
         xray_sync_users(list_users_as_rows())
     except Exception:
@@ -1343,6 +1345,43 @@ def ovpn_client_config(username, settings):
         f"{base}\n<ca>\n{ca}\n</ca>\n<cert>\n{cert_body}\n</cert>\n"
         f"<key>\n{key}\n</key>\n"
     )
+
+
+def ovpn_denied_names(rows=None):
+    if rows is None:
+        rows = list_users_as_rows()
+    denied = []
+    for row in rows:
+        protocols = row["protocols"].split(",")
+        if "ovpn" not in protocols:
+            continue
+        expired = bool(row["expire_date"] and row["expire_date"] < today().isoformat())
+        over_quota = bool(row["quota_bytes"] and row["used_bytes"] >= row["quota_bytes"])
+        if not row["enabled"] or expired or over_quota:
+            denied.append(row.get("ovpn_cert_name") or row["username"])
+    return sorted(set(denied))
+
+
+def write_ovpn_access_list(rows=None):
+    """Atomically publish disabled OpenVPN common names for client-connect checks."""
+    denied = ovpn_denied_names(rows)
+    if MOCK:
+        return denied
+    os.makedirs(OVPN_DIR, exist_ok=True)
+    target = os.path.join(OVPN_DIR, "nexo-disabled-clients.txt")
+    fd, temp_path = tempfile.mkstemp(prefix=".nexo-disabled-", dir=OVPN_DIR, text=True)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            if denied:
+                fh.write("\n".join(denied) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, target)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return denied
 
 
 def ovpn_status_bytes():
@@ -2015,6 +2054,7 @@ def renew_user(user_id, days, reset_traffic):
     )
     conn.commit()
     apply_enabled_state(row)
+    write_ovpn_access_list()
     fresh = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     if "ssh" in row["protocols"].split(",") and ssh_user_exists(row["username"]):
@@ -2275,6 +2315,7 @@ def enforce():
         )
     conn.commit()
     conn.close()
+    write_ovpn_access_list()
     if changed:
         xray_sync_users(list_users_as_rows())
     enforce_ip_limits(all_rows)

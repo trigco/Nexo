@@ -69,7 +69,10 @@ DEFAULT_SETTINGS = {
 }
 
 _lock = threading.Lock()
-_sessions = {}
+LOGIN_WINDOW_SECONDS = 900
+LOGIN_MAX_FAILURES = 8
+SESSION_TTL_SECONDS = 7 * 86400
+MAX_REQUEST_BODY = 1024 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -154,8 +157,10 @@ def fmt_bytes(n):
 # --------------------------------------------------------------------------
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 15000")
     return conn
 
 
@@ -172,6 +177,31 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            csrf_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            revoked_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            source_key TEXT PRIMARY KEY,
+            failures INTEGER NOT NULL DEFAULT 0,
+            window_started INTEGER NOT NULL,
+            locked_until INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor TEXT NOT NULL DEFAULT 'admin',
+            action TEXT NOT NULL,
+            target_type TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            request_id TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT 'success',
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,6 +275,75 @@ def init_db():
         )
         print(f"Admin created: user 'admin', password '{initial}'", flush=True)
         print("Change it after first login (Settings) or with --set-admin.", flush=True)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at)")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.commit()
+    conn.close()
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError:
+        pass
+
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def audit_event(action, target_type="", target_id="", request_id="",
+                outcome="success", details=None):
+    conn = db()
+    conn.execute(
+        "INSERT INTO audit_events (actor, action, target_type, target_id, "
+        "request_id, outcome, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("admin", action, target_type, str(target_id or ""), request_id, outcome,
+         json.dumps(details or {}, separators=(",", ":")),
+         datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def login_lock_state(source_key):
+    now = int(time.time())
+    conn = db()
+    row = conn.execute(
+        "SELECT failures, window_started, locked_until FROM login_attempts WHERE source_key=?",
+        (source_key,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return False, 0
+    return int(row["locked_until"]) > now, max(0, int(row["locked_until"]) - now)
+
+
+def record_login_failure(source_key):
+    now = int(time.time())
+    conn = db()
+    row = conn.execute(
+        "SELECT failures, window_started FROM login_attempts WHERE source_key=?",
+        (source_key,),
+    ).fetchone()
+    if not row or now - int(row["window_started"]) > LOGIN_WINDOW_SECONDS:
+        failures, started = 1, now
+    else:
+        failures, started = int(row["failures"]) + 1, int(row["window_started"])
+    locked_until = now + min(900, 30 * (2 ** min(max(failures - LOGIN_MAX_FAILURES, 0), 5))) \\
+        if failures >= LOGIN_MAX_FAILURES else 0
+    conn.execute(
+        "INSERT INTO login_attempts (source_key, failures, window_started, locked_until) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT(source_key) DO UPDATE SET "
+        "failures=excluded.failures, window_started=excluded.window_started, "
+        "locked_until=excluded.locked_until",
+        (source_key, failures, started, locked_until),
+    )
+    conn.commit()
+    conn.close()
+
+
+def clear_login_failures(source_key):
+    conn = db()
+    conn.execute("DELETE FROM login_attempts WHERE source_key=?", (source_key,))
     conn.commit()
     conn.close()
 

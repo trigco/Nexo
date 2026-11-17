@@ -1346,6 +1346,8 @@ def user_public(row, settings, online_ips=None):
         info[key] = inbound_link(inbound, row, settings)
     if "ovpn" in protocols:
         info["ovpn_config"] = f"/api/users/{row['id']}/ovpn"
+    if "dnstt" in protocols:
+        info["dnstt_domain"] = settings.get("dnstt_domain", "")
     data["info"] = info
     return data
 
@@ -1453,8 +1455,10 @@ def create_user(data):
         raise ValueError("Validity must be between 0 and 3650 days.")
     if not 0 <= quota_gb <= 1000000:
         raise ValueError("Quota must be between 0 and 1,000,000 GB.")
-    if not 0 <= ip_limit <= 10000 or not 0 <= hwid_limit <= 10000:
-        raise ValueError("IP and device limits must be between 0 and 10,000.")
+    if not 0 <= ip_limit <= 10000:
+        raise ValueError("IP limit must be between 0 and 10,000.")
+    if hwid_limit != 0:
+        raise ValueError("Stable device identity is not available for these protocols; use IP limits instead.")
     note = str(data.get("note", ""))
     if len(note) > 2000:
         raise ValueError("Note cannot exceed 2,000 characters.")
@@ -1543,7 +1547,7 @@ def update_user(user_id, data):
         allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
         if not isinstance(new_protocols, list) or not new_protocols:
             raise ValueError("A user must have at least one enabled protocol.")
-        if any(p not in allowed_protocols for p in new_protocols):
+        if any(p not in allowed_protocols and p not in protocols for p in new_protocols):
             raise ValueError("One or more selected protocols are unsupported.")
         new_protocols = list(dict.fromkeys(new_protocols))
         if new_protocols != protocols:
@@ -2888,7 +2892,6 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <label><input type="checkbox" class="ufProto" value="trojan"> Trojan</label>
         <label><input type="checkbox" class="ufProto" value="shadowsocks"> Shadowsocks</label>
         <label><input type="checkbox" class="ufProto" value="ovpn"> OpenVPN</label>
-        <label><input type="checkbox" class="ufProto" value="dnstt"> DNSTT</label>
       </div>
     </div>
     <div class="field" id="ufIbWrap" style="margin-top:10px;display:none"><label>Inbounds — this client is added to the ticked inbounds</label>

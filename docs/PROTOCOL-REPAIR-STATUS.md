@@ -79,3 +79,17 @@ GitHub Actions currently checks Python compilation, shell syntax, protocol/unit 
 - Hostnames, IPs, URL paths, ports, brand text and Telegram links are validated before persistence.
 - Service ports that are not yet reconfigured by Nexo are now read-only in the UI and rejected by the API if changed; this prevents the panel from generating client links to ports the daemon is not actually listening on.
 - Panel port remains editable but explicitly requires a service restart before taking effect.
+
+
+## Follow-up fixes — 2026-11-17
+
+- Xray candidate configuration files are assigned `root:xray` ownership and mode `0640` before atomic publication; rollback candidates receive the same attributes. This prevents a generated config from reverting to `root:root` mode and becoming unreadable to the Xray service account.
+- SSH-only account creation, editing, renewal and deletion no longer require an Xray configuration rebuild. Xray sync remains mandatory for users with Xray-backed protocols.
+- Service actions now verify the resulting systemd active/inactive state before the API reports success. A timeout includes recent unit journal output, and the UI reports the verified state rather than saying only that the action was sent.
+- Added regression tests for SSH-only edit/delete and protocol-aware provisioning, plus service state verification.
+
+## Remaining protocol release gates
+
+- DNSTT is still installed by a best-effort installer block. The service currently forwards the tunnel to SSH port 22 only; there is no shared SSH/VLESS protocol multiplexer, and the panel does not safely resolve the UDP/53 listener conflict with the local DNS stub. Do not enable this service on a host until the listener and shared-stream routing design is implemented and tested.
+- OpenVPN disabled-user admission is fail-closed for new connections. Existing connected clients are not yet actively disconnected when quota/expiry/suspension is reached.
+- The branch has not been verified against a disposable Ubuntu 24.04 VPS after these latest changes. CI and live protocol tests must pass before production deployment.

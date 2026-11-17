@@ -432,6 +432,8 @@ def validate_settings(data):
     host_keys = {"server_host", "cf_ws_host", "sni_host", "dnstt_domain"}
     for key, value in data.items():
         if key in port_keys:
+            if isinstance(value, bool):
+                raise ValueError(f"{key} must be a valid TCP/UDP port.")
             try:
                 port = int(value)
             except (TypeError, ValueError, OverflowError):
@@ -458,7 +460,7 @@ def validate_settings(data):
             clean[key] = value.strip()
         elif key == "telegram":
             if not isinstance(value, str) or not re.fullmatch(
-                    r"https://t\\.me/[A-Za-z0-9_/?=-]{1,120}", value):
+                    r"https://t\.me/[A-Za-z0-9_/?=-]{1,120}", value):
                 raise ValueError("telegram must be an HTTPS t.me link.")
             clean[key] = value
     return clean

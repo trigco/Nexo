@@ -12,6 +12,11 @@ if [ "$(id -u)" != "0" ]; then
   echo "Please run as root (sudo bash install.sh)"; exit 1
 fi
 
+EXISTING_INSTALL=0
+if [ -f /etc/mpanel/panel.db ]; then
+  EXISTING_INSTALL=1
+fi
+
 echo "==> Detecting public IP..."
 PUBIP="$(curl -fsS --max-time 10 https://api.ipify.org || true)"
 if [ -z "${PUBIP}" ]; then
@@ -30,6 +35,26 @@ apt-get install -y python3 iptables stunnel4 openvpn easy-rsa curl openssl \
   echo "Package installation failed. Check network and apt sources."; exit 1; }
 
 mkdir -p /etc/mpanel /etc/stunnel-ssh /etc/dnstt /var/log/openvpn
+
+# Always preserve the current control-plane data and host configuration before
+# an upgrade. Backups contain credentials/private keys and remain root-only.
+BACKUP_DIR="/var/backups/nexo/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+BACKUP_PATHS=()
+for path in etc/mpanel usr/local/etc/xray etc/openvpn etc/stunnel-ssh \
+            etc/ssh/sshd_config etc/systemd/system/mpanel.service \
+            etc/systemd/system/wsproxy.service; do
+  [ -e "/$path" ] && BACKUP_PATHS+=("$path")
+done
+if [ "${#BACKUP_PATHS[@]}" -gt 0 ]; then
+  tar -czf "$BACKUP_DIR/configs.tar.gz" -C / "${BACKUP_PATHS[@]}" || {
+    echo "Backup failed. Aborting upgrade before changing services."; exit 1; }
+fi
+iptables-save > "$BACKUP_DIR/iptables.rules" 2>/dev/null || true
+nft list ruleset > "$BACKUP_DIR/nft.rules" 2>/dev/null || true
+chmod 600 "$BACKUP_DIR"/* 2>/dev/null || true
+echo "    Pre-install backup: $BACKUP_DIR"
 
 echo "==> Writing panel and proxy programs..."
 cat > /usr/local/bin/mpanel.py <<'PANEL_PY_EOF'
@@ -4672,17 +4697,22 @@ sysctl --system >/dev/null 2>&1 || true
 
 echo "==> Initialising panel database and admin..."
 PANEL_HOME=/etc/mpanel PANEL_ADMIN_PASSWORD="${ADMIN_PW}" \
-  python3 /usr/local/bin/mpanel.py --enforce >/dev/null 2>&1 || true
-# On a re-run the admin already exists; force the password to the one printed
-# below so the summary never shows a password that does not work.
-PANEL_HOME=/etc/mpanel python3 /usr/local/bin/mpanel.py \
-  --set-admin "${ADMIN_PW}" >/dev/null 2>&1 || true
+  python3 /usr/local/bin/mpanel.py --enforce || {
+    echo "Panel database initialisation/enforcement failed."; exit 1; }
+if [ "$EXISTING_INSTALL" -eq 0 ]; then
+  PANEL_HOME=/etc/mpanel python3 /usr/local/bin/mpanel.py \
+    --set-admin "${ADMIN_PW}" || {
+      echo "Unable to set initial admin password."; exit 1; }
+  printf 'Panel admin user: admin\nPanel admin password: %s\nPanel URL: https://%s:%s\n' \
+    "${ADMIN_PW}" "${PUBIP}" "${PANEL_PORT}" > /root/mpanel-admin.txt
+  chmod 600 /root/mpanel-admin.txt
+else
+  echo "    Existing admin password preserved; installer will not rotate credentials."
+  echo "    Previous credentials file (if present) was preserved."
+fi
 sqlite3 /etc/mpanel/panel.db \
   "UPDATE settings SET value='${PUBIP}' WHERE key='server_host';
    UPDATE settings SET value='${DNSTT_DOMAIN_DEFAULT}' WHERE key='dnstt_domain';" 2>/dev/null || true
-printf 'Panel admin user: admin\nPanel admin password: %s\nPanel URL: https://%s:%s\n' \
-  "${ADMIN_PW}" "${PUBIP}" "${PANEL_PORT}" > /root/mpanel-admin.txt
-chmod 600 /root/mpanel-admin.txt
 
 echo "==> Installing Xray (V2Ray)..."
 if bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1; then

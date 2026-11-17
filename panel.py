@@ -459,6 +459,22 @@ def chain_name(username):
     return f"MP_{username}"[:28]
 
 
+def chain_in_name(username):
+    return f"MI_{username}"[:28]
+
+
+def ssh_mark(username):
+    if MOCK:
+        return 0x4E000001
+    result = run(["id", "-u", username], timeout=5)
+    if result.returncode != 0 or not result.stdout.strip().isdigit():
+        raise RuntimeError(f"Unable to resolve Linux UID for {username}.")
+    uid = int(result.stdout.strip())
+    if uid <= 0 or uid > 0x00FFFFFF:
+        raise RuntimeError("Linux UID is outside the supported accounting mark range.")
+    return 0x4E000000 | uid
+
+
 def ssh_create_user(username, password, expire_date):
     run(["useradd", "-m", "-s", "/bin/bash", username], check=True)
     proc = subprocess.run(
@@ -466,6 +482,7 @@ def ssh_create_user(username, password, expire_date):
         capture_output=True, text=True,
     ) if not MOCK else subprocess.CompletedProcess([], 0, "", "")
     if not MOCK and proc.returncode != 0:
+        run(["userdel", "-r", username])
         raise RuntimeError(f"chpasswd failed: {proc.stderr.strip()}")
     if expire_date:
         run(["chage", "-E", expire_date, username], check=True)
@@ -473,26 +490,57 @@ def ssh_create_user(username, password, expire_date):
 
 
 def ssh_ensure_chain(username):
-    chain = chain_name(username)
-    run(["iptables", "-N", chain])
-    run(["iptables", "-F", chain])
-    run(["iptables", "-A", chain, "-m", "owner", "--uid-owner", username, "-j", "RETURN"])
-    # Single jump from OUTPUT; remove duplicates first.
-    while run(["iptables", "-D", "OUTPUT", "-j", chain]).returncode == 0 and not MOCK:
-        pass
-    run(["iptables", "-A", "OUTPUT", "-j", chain])
+    """Account both directions of user-owned connections in the mangle table.
+
+    The first OUTPUT rule stamps conntrack with a reserved per-UID mark.
+    RETURN rules count upload and matching reply/download bytes. We read only
+    RETURN counters, avoiding double-counting the mark-setting rule.
+    """
+    mark = ssh_mark(username)
+    out_chain, in_chain = chain_name(username), chain_in_name(username)
+    run(["iptables", "-t", "mangle", "-N", out_chain])
+    run(["iptables", "-t", "mangle", "-F", out_chain])
+    run(["iptables", "-t", "mangle", "-N", in_chain])
+    run(["iptables", "-t", "mangle", "-F", in_chain])
+    run(["iptables", "-t", "mangle", "-A", out_chain, "-m", "owner",
+         "--uid-owner", username, "-j", "CONNMARK", "--set-mark", str(mark)])
+    run(["iptables", "-t", "mangle", "-A", out_chain, "-m", "connmark",
+         "--mark", str(mark), "-j", "RETURN"])
+    run(["iptables", "-t", "mangle", "-A", in_chain, "-m", "connmark",
+         "--mark", str(mark), "-j", "RETURN"])
+    if not MOCK:
+        while run(["iptables", "-t", "mangle", "-D", "OUTPUT", "-j", out_chain]).returncode == 0:
+            pass
+        while run(["iptables", "-t", "mangle", "-D", "INPUT", "-j", in_chain]).returncode == 0:
+            pass
+    run(["iptables", "-t", "mangle", "-A", "OUTPUT", "-j", out_chain])
+    run(["iptables", "-t", "mangle", "-A", "INPUT", "-j", in_chain])
 
 
 def ssh_chain_bytes(username):
     if MOCK:
         return 0
-    result = run(["iptables", "-L", chain_name(username), "-v", "-x", "-n"])
     total = 0
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0].isdigit():
-            total += int(fields[1])
+    for chain in (chain_name(username), chain_in_name(username)):
+        result = run(["iptables", "-t", "mangle", "-L", chain, "-v", "-x", "-n"])
+        if result.returncode != 0:
+            continue
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            # iptables -L columns: pkts bytes target ...
+            if len(fields) >= 3 and fields[2] == "RETURN" and fields[1].isdigit():
+                total += int(fields[1])
     return total
+
+
+def ssh_delete_user(username):
+    run(["pkill", "-u", username])
+    run(["userdel", "-r", username])
+    for parent, chain in (("OUTPUT", chain_name(username)),
+                          ("INPUT", chain_in_name(username))):
+        run(["iptables", "-t", "mangle", "-D", parent, "-j", chain])
+        run(["iptables", "-t", "mangle", "-F", chain])
+        run(["iptables", "-t", "mangle", "-X", chain])
 
 
 def ssh_set_enabled(username, enabled):

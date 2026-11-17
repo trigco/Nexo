@@ -2428,6 +2428,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.require_auth():
                     return
                 return self.send_json({"events": list_audit_events()})
+            if path == "/api/packages":
+                if not self.require_auth():
+                    return
+                return self.send_json({"packages": list_packages()})
             if path == "/api/settings":
                 if not self.require_auth():
                     return
@@ -2504,6 +2508,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/users":
                 user = create_user(self.body_json())
                 return self.send_json({"user": user})
+            if path == "/api/packages":
+                package_id = create_package(self.body_json())
+                return self.send_json({"ok": True, "id": package_id,
+                                       "packages": list_packages()})
+            match = re.fullmatch(r"/api/packages/(\d+)", path)
+            if match:
+                package_id = update_package(int(match.group(1)), self.body_json())
+                return self.send_json({"ok": True, "id": package_id,
+                                       "packages": list_packages()})
             match = re.fullmatch(r"/api/users/(\d+)/renew", path)
             if match:
                 data = self.body_json()
@@ -2591,6 +2604,10 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/api/users/(\d+)", path)
             if match:
                 delete_user(int(match.group(1)))
+                return self.send_json({"ok": True})
+            match = re.fullmatch(r"/api/packages/(\d+)", path)
+            if match:
+                delete_package(int(match.group(1)))
                 return self.send_json({"ok": True})
             match = re.fullmatch(r"/api/inbounds/(\d+)", path)
             if match:

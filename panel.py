@@ -1192,7 +1192,6 @@ def user_public(row, settings, online_ips=None):
     data = {
         "id": row["id"],
         "username": row["username"],
-        "password": row["password"],
         "protocols": protocols,
         "uuid": row["uuid"],
         "ip_limit": row["ip_limit"] if "ip_limit" in row.keys() else 0,
@@ -1365,7 +1364,12 @@ def create_user(data):
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     xray_sync_users(list_users_as_rows())
-    return user_public(row, settings)
+    public = user_public(row, settings)
+    # The initial SSH/Trojan/SS credentials are delivered once by the create
+    # response. They are never included in subsequent list/detail responses.
+    if set(protocols) & {"ssh", "trojan", "shadowsocks"}:
+        public["credential_once"] = password
+    return public
 
 
 def list_users_as_rows():
@@ -1813,7 +1817,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self._security_headers()
         for key, value in (headers or {}).items():
-            self.send_header(key, value)
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    self.send_header(key, item)
+            else:
+                self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1999,10 +2007,12 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                     audit_event("auth.login", request_id=self.headers.get("X-Request-ID", ""))
                     return self.send_json(
-                        {"ok": True, "csrf_token": csrf},
-                        headers={"Set-Cookie":
-                                 f"mpanel_session={token}; Path=/; HttpOnly; Secure; "
-                                 "SameSite=Strict; Max-Age=604800"},
+                        {"ok": True},
+                        headers={"Set-Cookie": [
+                            f"mpanel_session={token}; Path=/; HttpOnly; Secure; "
+                            "SameSite=Strict; Max-Age=604800",
+                            f"mpanel_csrf={csrf}; Path=/; Secure; SameSite=Strict; Max-Age=604800",
+                        ]},
                     )
                 record_login_failure(source_key)
                 return self.send_json({"error": "Wrong username or password."},
@@ -2020,9 +2030,10 @@ class Handler(BaseHTTPRequestHandler):
                     audit_event("auth.logout", request_id=self.headers.get("X-Request-ID", ""))
                 return self.send_json(
                     {"ok": True},
-                    headers={"Set-Cookie":
-                             "mpanel_session=; Path=/; HttpOnly; Secure; "
-                             "SameSite=Strict; Max-Age=0"},
+                    headers={"Set-Cookie": [
+                        "mpanel_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+                        "mpanel_csrf=; Path=/; Secure; SameSite=Strict; Max-Age=0",
+                    ]},
                 )
             if not self.require_auth():
                 return

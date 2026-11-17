@@ -4549,26 +4549,44 @@ if __name__ == "__main__":
 WSPROXY_PY_EOF
 chmod +x /usr/local/bin/mpanel.py /usr/local/bin/wsproxy.py
 
-echo "==> Generating certificates (panel + stunnel)..."
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout /etc/mpanel/panel.key -out /etc/mpanel/panel.crt \
-  -subj "/CN=${PUBIP}" >/dev/null 2>&1
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout /etc/stunnel-ssh/key.pem -out /etc/stunnel-ssh/cert.pem \
-  -subj "/CN=${DNSTT_DOMAIN_DEFAULT}" >/dev/null 2>&1
+echo "==> Generating certificates (preserve existing certificates on upgrades)..."
+if [ ! -s /etc/mpanel/panel.crt ] || [ ! -s /etc/mpanel/panel.key ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout /etc/mpanel/panel.key -out /etc/mpanel/panel.crt \
+    -subj "/CN=${PUBIP}" >/dev/null 2>&1 || {
+      echo "Panel certificate generation failed."; exit 1; }
+else
+  echo "    Existing panel certificate preserved."
+fi
+if [ ! -s /etc/stunnel-ssh/key.pem ] || [ ! -s /etc/stunnel-ssh/cert.pem ]; then
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout /etc/stunnel-ssh/key.pem -out /etc/stunnel-ssh/cert.pem \
+    -subj "/CN=${DNSTT_DOMAIN_DEFAULT}" >/dev/null 2>&1 || {
+      echo "Stunnel certificate generation failed."; exit 1; }
+else
+  echo "    Existing stunnel certificate preserved."
+fi
 cat /etc/stunnel-ssh/key.pem /etc/stunnel-ssh/cert.pem > /etc/stunnel-ssh/stunnel.pem
 chmod 600 /etc/mpanel/panel.key /etc/stunnel-ssh/stunnel.pem
 
 echo "==> Configuring SSH (password auth, banner, login message)..."
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/00-password-auth.conf <<'EOF'
+if [ ! -f /etc/ssh/sshd_config.d/00-password-auth.conf ]; then
+  cat > /etc/ssh/sshd_config.d/00-password-auth.conf <<'EOF'
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 EOF
-printf '%b' '\n\033[1;36m  ============================================\033[0m\n\033[1;32m        ★  NEXO  ★\033[0m\n\033[1;36m  ============================================\033[0m\n\033[1;33m   Rules: No DDoS | No Torrent | No illegal use\033[0m\n\033[1;31m   Violation = instant ban, no refund\033[0m\n\n' > /etc/ssh/banner
-cat > /etc/ssh/sshd_config.d/01-banner.conf <<'EOF'
+else
+  echo "    Existing SSH password-auth policy preserved."
+fi
+if [ ! -f /etc/ssh/banner ]; then
+  printf '%b' '\n\033[1;36m  ============================================\033[0m\n\033[1;32m        ★  NEXO  ★\033[0m\n\033[1;36m  ============================================\033[0m\n\033[1;33m   Rules: No DDoS | No Torrent | No illegal use\033[0m\n\033[1;31m   Violation = instant ban, no refund\033[0m\n\n' > /etc/ssh/banner
+fi
+if [ ! -f /etc/ssh/sshd_config.d/01-banner.conf ]; then
+  cat > /etc/ssh/sshd_config.d/01-banner.conf <<'EOF'
 Banner /etc/ssh/banner
 EOF
+fi
 cat > /etc/profile.d/99-vps-message.sh <<'EOF'
 #!/bin/bash
 # Branded post-login message with live quota from the panel database.

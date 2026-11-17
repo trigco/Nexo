@@ -787,23 +787,33 @@ def _apply_security_material(inbound_id, security, stream):
 def create_inbound(data):
     protocol, network, security, port, stream, max_clients = _validate_inbound(data)
     conn = db()
-    if conn.execute("SELECT 1 FROM inbounds WHERE port = ?", (port,)).fetchone():
+    try:
+        if conn.execute("SELECT 1 FROM inbounds WHERE port = ?", (port,)).fetchone():
+            raise ValueError("Another inbound already uses that port.")
+        cursor = conn.execute(
+            "INSERT INTO inbounds (remark, protocol, port, network, path, security, "
+            "enabled, stream_json, max_clients) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?)",
+            (data.get("remark") or f"{protocol.upper()} {port}", protocol, port,
+             network, stream["path"], security, max_clients),
+        )
+        inbound_id = cursor.lastrowid
+        stream = _apply_security_material(inbound_id, security, stream)
+        conn.execute("UPDATE inbounds SET stream_json = ? WHERE id = ?",
+                     (json.dumps(stream), inbound_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
         conn.close()
-        raise ValueError("Another inbound already uses that port.")
-    cursor = conn.execute(
-        "INSERT INTO inbounds (remark, protocol, port, network, path, security, "
-        "enabled, stream_json, max_clients) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?)",
-        (data.get("remark") or f"{protocol.upper()} {port}", protocol, port,
-         network, stream["path"], security, max_clients),
-    )
-    inbound_id = cursor.lastrowid
-    conn.commit()
-    stream = _apply_security_material(inbound_id, security, stream)
-    conn.execute("UPDATE inbounds SET stream_json = ? WHERE id = ?",
-                 (json.dumps(stream), inbound_id))
-    conn.commit()
+        raise
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    try:
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        rollback = db()
+        rollback.execute("DELETE FROM inbounds WHERE id = ?", (inbound_id,))
+        rollback.commit()
+        rollback.close()
+        raise
     return inbound_id
 
 
@@ -813,7 +823,8 @@ def update_inbound(inbound_id, data):
     if not row:
         conn.close()
         raise ValueError("Inbound not found.")
-    old_stream = inbound_stream(dict(row))
+    original = dict(row)
+    old_stream = inbound_stream(original)
     merged = dict(old_stream)
     merged.update({
         "protocol": row["protocol"], "network": row["network"],
@@ -822,7 +833,6 @@ def update_inbound(inbound_id, data):
     })
     merged.update({k: v for k, v in data.items() if v is not None})
     protocol, network, security, port, stream, max_clients = _validate_inbound(merged)
-    # Keep generated material unless security is new or regeneration is asked.
     for keep in ("cert_file", "key_file", "reality_priv", "reality_pub", "short_id"):
         if old_stream.get(keep) and not data.get("regenerate"):
             stream[keep] = old_stream[keep]
@@ -839,16 +849,48 @@ def update_inbound(inbound_id, data):
     )
     conn.commit()
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    try:
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        restore = db()
+        restore.execute(
+            "UPDATE inbounds SET remark=?, protocol=?, port=?, network=?, path=?, "
+            "security=?, enabled=?, stream_json=?, max_clients=? WHERE id=?",
+            (original["remark"], original["protocol"], original["port"],
+             original["network"], original["path"], original["security"],
+             original["enabled"], original["stream_json"], original.get("max_clients", 0),
+             inbound_id),
+        )
+        restore.commit()
+        restore.close()
+        raise
     return inbound_id
 
 
 def delete_inbound(inbound_id):
     conn = db()
+    row = conn.execute("SELECT * FROM inbounds WHERE id = ?", (inbound_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Inbound not found.")
+    original = dict(row)
     conn.execute("DELETE FROM inbounds WHERE id = ?", (inbound_id,))
     conn.commit()
     conn.close()
-    xray_sync_users(list_users_as_rows())
+    try:
+        xray_sync_users(list_users_as_rows())
+    except Exception:
+        restore = db()
+        columns = list(original.keys())
+        names = ", ".join(columns)
+        placeholders = ", ".join("?" for _ in columns)
+        restore.execute(
+            f"INSERT INTO inbounds ({names}) VALUES ({placeholders})",
+            tuple(original[k] for k in columns),
+        )
+        restore.commit()
+        restore.close()
+        raise
 
 
 def xray_stats():

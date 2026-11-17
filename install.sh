@@ -2328,6 +2328,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'",
+        )
+        if isinstance(self.connection, ssl.SSLSocket):
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
 
     def send_json(self, payload, status=200, headers=None):
         body = json.dumps(payload).encode()
@@ -2531,6 +2541,10 @@ class Handler(BaseHTTPRequestHandler):
                     now = int(time.time())
                     conn = db()
                     conn.execute(
+                        "DELETE FROM sessions WHERE expires_at < ? OR revoked_at < ?",
+                        (now, now - 30 * 86400),
+                    )
+                    conn.execute(
                         "INSERT INTO sessions (token_hash, csrf_hash, created_at, expires_at) "
                         "VALUES (?, ?, ?, ?)",
                         (token_hash(token), token_hash(csrf), now, now + SESSION_TTL_SECONDS),
@@ -2547,6 +2561,8 @@ class Handler(BaseHTTPRequestHandler):
                         ]},
                     )
                 record_login_failure(source_key)
+                audit_event("auth.login_failed", request_id=self.headers.get("X-Request-ID", ""),
+                            outcome="failure", details={"source": source_key})
                 return self.send_json({"error": "Wrong username or password."},
                                       status=403)
             if path == "/api/logout":
@@ -3129,7 +3145,8 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <section class="page" id="page-packages">
         <div class="grid2">
           <form class="card" id="packageForm">
-            <h3>Create service package</h3>
+            <h3 id="packageFormTitle">Create service package</h3>
+            <input type="hidden" id="pkId">
             <div class="field"><label>Package name</label><input id="pkName" required maxlength="48" placeholder="Starter 30D"></div>
             <div class="fgrid">
               <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="pkQuota" type="number" min="0" step="0.5" value="50"></div>
@@ -3757,7 +3774,8 @@ async function loadPackages(){
         +'<td>'+esc(p.quota_gb ? p.quota_gb+" GB" : "Unlimited")+'</td>'
         +'<td>'+esc(p.validity_days ? p.validity_days+" days" : "Unlimited")+'</td>'
         +'<td>'+esc(p.ip_limit ? p.ip_limit : "Unlimited")+'</td>'
-        +'<td>'+assigned+'</td><td><button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></td></tr>';
+        +'<td>'+assigned+'</td><td><div class="rowacts"><button class="btn ghost small" onclick="editPackage('+p.id+')">Edit</button>'
+        +'<button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></div></td></tr>';
     }).join("") || '<tr><td colspan="7" class="muted">No packages created.</td></tr>';
     $("#ufPackage").innerHTML = '<option value="">Custom limits</option>' +
       PACKAGES.filter(p=>p.enabled).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join("");
@@ -3768,15 +3786,28 @@ $("#packageForm").addEventListener("submit", async e => {
   const protocols = $(".pkProto").filter(x=>x.checked).map(x=>x.value);
   if(!protocols.length){ toast("Select at least one protocol."); return; }
   try{
-    await api("/api/packages", {method:"POST", body:JSON.stringify({
+    const id = $("#pkId").value;
+    await api(id ? "/api/packages/"+id : "/api/packages", {method:"POST", body:JSON.stringify({
       name:$("#pkName").value.trim(), quota_gb:Number($("#pkQuota").value||0),
       validity_days:Number($("#pkDays").value||0), ip_limit:Number($("#pkIp").value||0),
-      protocols, inbound_ids:[]
+      protocols
     })});
-    $("#packageForm").reset();
-    toast("Package created."); loadPackages();
+    $("#packageForm").reset(); $("#pkId").value = "";
+    $("#packageFormTitle").textContent = "Create service package";
+    toast(id ? "Package updated." : "Package created."); loadPackages();
   }catch(err){ toast(err.message); }
 });
+window.editPackage = id => {
+  const p = PACKAGES.find(x=>x.id===id); if(!p) return;
+  $("#pkId").value = p.id; $("#pkName").value = p.name;
+  $("#pkQuota").value = p.quota_gb || 0;
+  $("#pkDays").value = p.validity_days || 0;
+  $("#pkIp").value = p.ip_limit || 0;
+  $(".pkProto").forEach(x=>x.checked=p.protocols.includes(x.value));
+  $("#packageFormTitle").textContent = "Edit package — " + p.name;
+  gotoPage("packages");
+  window.scrollTo({top:0,behavior:"smooth"});
+};
 window.deletePackage = async id => {
   const p = PACKAGES.find(x=>x.id===id);
   if(!confirm("Delete package "+(p?p.name:id)+"? Assigned packages cannot be deleted.")) return;
@@ -3943,6 +3974,7 @@ window.showInfo = id => {
   const kv = (k,v,copy) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v mono">${esc(v)}</div>${copy?`<button class="copy" data-copy="${esc(v)}">Copy</button>`:""}</div>`;
   let accountHtml = '<div class="info-sec"><h4>Account</h4>'
     + kv("Username", u.username, true)
+    + kv("Package", (u.package_snapshot && u.package_snapshot.name) || "Custom")
     + (u.uuid ? kv("UUID", u.uuid, true) : "")
     + kv("Expires", u.expire_date || "Never") + kv("Traffic", fmtBytes(u.used_bytes) + " / " + (u.quota_bytes?fmtBytes(u.quota_bytes):"Unlimited"))
     + kv("IP limit", u.ip_limit ? u.ip_limit+" IPs" : "Unlimited")

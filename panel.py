@@ -2936,6 +2936,10 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <svg class="ic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3.5 20c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><path d="M16 5.2a3.5 3.5 0 0 1 0 5.9M17.8 15.4c1.5.7 2.4 2.2 2.7 4.6"/></svg>
         <span>Users</span>
       </div>
+      <div class="nav-item" data-page="packages">
+        <svg class="ic" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg>
+        <span>Packages</span>
+      </div>
       <div class="nav-item" data-page="online">
         <svg class="ic" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10.5 10.5 0 0 1 13 0M8.6 16a6 6 0 0 1 6.8 0"/><circle cx="12" cy="19.4" r="1.3" fill="currentColor"/></svg>
         <span>Online</span>
@@ -3051,6 +3055,42 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
           <div class="tblwrap"><table>
             <thead><tr><th>User</th><th>Protocols</th><th style="min-width:170px">Traffic</th><th>Expires</th><th>Status</th><th>Online</th><th>Actions</th></tr></thead>
             <tbody id="userRows"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <!-- ===== Packages ===== -->
+      <section class="page" id="page-packages">
+        <div class="grid2">
+          <form class="card" id="packageForm">
+            <h3>Create service package</h3>
+            <div class="field"><label>Package name</label><input id="pkName" required maxlength="48" placeholder="Starter 30D"></div>
+            <div class="fgrid">
+              <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="pkQuota" type="number" min="0" step="0.5" value="50"></div>
+              <div class="field"><label>Validity (days, 0 = unlimited)</label><input id="pkDays" type="number" min="0" max="3650" value="30"></div>
+              <div class="field"><label>IP limit (0 = unlimited)</label><input id="pkIp" type="number" min="0" max="10000" value="1"></div>
+            </div>
+            <div class="field"><label>Allowed protocols</label>
+              <div class="checks">
+                <label><input type="checkbox" class="pkProto" value="ssh" checked> SSH</label>
+                <label><input type="checkbox" class="pkProto" value="vless"> VLESS</label>
+                <label><input type="checkbox" class="pkProto" value="vmess"> VMess</label>
+                <label><input type="checkbox" class="pkProto" value="trojan"> Trojan</label>
+                <label><input type="checkbox" class="pkProto" value="shadowsocks"> Shadowsocks</label>
+                <label><input type="checkbox" class="pkProto" value="ovpn"> OpenVPN</label>
+              </div>
+            </div>
+            <button class="btn" type="submit">Create package</button>
+          </form>
+          <div class="card">
+            <h3>Package policy</h3>
+            <p class="muted">Applied package limits are snapshotted on each user. Editing a package later does not silently change existing customer entitlements. Assign the updated package explicitly to a user to apply its new policy.</p>
+          </div>
+        </div>
+        <div class="card" style="padding:8px 14px;margin-top:15px">
+          <div class="tblwrap"><table>
+            <thead><tr><th>Package</th><th>Protocols</th><th>Quota</th><th>Validity</th><th>IP limit</th><th>Assigned</th><th>Actions</th></tr></thead>
+            <tbody id="packageRows"></tbody>
           </table></div>
         </div>
       </section>
@@ -3180,6 +3220,7 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
     <input type="hidden" id="ufId">
     <div class="fgrid">
       <div class="field"><label>Username</label><input id="ufName" required></div>
+      <div class="field full"><label>Service package (optional)</label><select id="ufPackage"><option value="">Custom limits</option></select></div>
       <div class="field" id="ufPassWrap"><label>Password (SSH login)</label><input id="ufPass">
         <div class="muted" style="font-size:11.5px;margin-top:5px">Only needed for SSH. V2Ray clients connect with their UUID / link — no password.</div></div>
       <div class="field"><label>Quota (GB, 0 = unlimited)</label><input id="ufQuota" type="number" step="0.5" min="0" value="100"></div>
@@ -3352,13 +3393,14 @@ document.addEventListener("click", e => {
 });
 
 /* ---------- navigation ---------- */
-const PAGE_TITLES = {dashboard:"Dashboard", users:"Users", online:"Online clients",
+const PAGE_TITLES = {dashboard:"Dashboard", users:"Users", packages:"Packages", online:"Online clients",
   inbounds:"Inbounds", services:"Services", audit:"Audit log", settings:"Settings"};
 function gotoPage(name){
   $$(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.page===name));
   $$(".page").forEach(p => p.classList.toggle("active", p.id==="page-"+name));
   $("#pageTitle").textContent = PAGE_TITLES[name] || name;
   if(name==="users") loadUsers();
+  if(name==="packages") loadPackages();
   if(name==="online") loadOnline();
   if(name==="inbounds") loadInbounds();
   if(name==="services") loadServices();
@@ -3387,7 +3429,7 @@ $("#refreshBtn").addEventListener("click", () => {
 function showApp(){
   $("#loginView").style.display = "none";
   $("#appView").style.display = "block";
-  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); loadOnline();
+  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); loadOnline(); loadPackages();
 }
 
 /* ---------- online clients ---------- */
@@ -3636,6 +3678,46 @@ document.addEventListener("DOMContentLoaded", () => {
   cv.addEventListener("mouseleave", () => { HOVER_IDX = -1; tip.style.display = "none"; drawChart(); });
 });
 
+/* ---------- packages ---------- */
+let PACKAGES = [];
+async function loadPackages(){
+  try{
+    const d = await api("/api/packages");
+    PACKAGES = d.packages || [];
+    $("#packageRows").innerHTML = PACKAGES.map(p => {
+      const assigned = USERS.filter(u => u.package_id === p.id).length;
+      return '<tr><td><b>'+esc(p.name)+'</b></td>'
+        +'<td>'+p.protocols.map(x=>'<span class="pill proto">'+esc(x)+'</span>').join(" ")+'</td>'
+        +'<td>'+esc(p.quota_gb ? p.quota_gb+" GB" : "Unlimited")+'</td>'
+        +'<td>'+esc(p.validity_days ? p.validity_days+" days" : "Unlimited")+'</td>'
+        +'<td>'+esc(p.ip_limit ? p.ip_limit : "Unlimited")+'</td>'
+        +'<td>'+assigned+'</td><td><button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></td></tr>';
+    }).join("") || '<tr><td colspan="7" class="muted">No packages created.</td></tr>';
+    $("#ufPackage").innerHTML = '<option value="">Custom limits</option>' +
+      PACKAGES.filter(p=>p.enabled).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join("");
+  }catch(e){ toast(e.message); }
+}
+$("#packageForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const protocols = $(".pkProto").filter(x=>x.checked).map(x=>x.value);
+  if(!protocols.length){ toast("Select at least one protocol."); return; }
+  try{
+    await api("/api/packages", {method:"POST", body:JSON.stringify({
+      name:$("#pkName").value.trim(), quota_gb:Number($("#pkQuota").value||0),
+      validity_days:Number($("#pkDays").value||0), ip_limit:Number($("#pkIp").value||0),
+      protocols, inbound_ids:[]
+    })});
+    $("#packageForm").reset();
+    toast("Package created."); loadPackages();
+  }catch(err){ toast(err.message); }
+});
+window.deletePackage = async id => {
+  const p = PACKAGES.find(x=>x.id===id);
+  if(!confirm("Delete package "+(p?p.name:id)+"? Assigned packages cannot be deleted.")) return;
+  try{ await api("/api/packages/"+id,{method:"DELETE"}); toast("Package deleted."); loadPackages(); }
+  catch(err){ toast(err.message); }
+};
+
 /* ---------- users ---------- */
 let USERS = [];
 function daysLeft(exp){
@@ -3725,7 +3807,8 @@ $$(".ufProto").forEach(c => c.addEventListener("change", () => {
 $("#newUserBtn").addEventListener("click", () => {
   $("#userForm").reset();
   $("#ufId").value = "";
-  $$(".ufProto").forEach(c => c.checked = c.value==="ssh");
+  $("#ufPackage").value = "";
+  $(".ufProto").forEach(c => c.checked = c.value==="ssh");
   UF_IB_SELECTED = null; syncUfForm();
   $("#userModalTitle").textContent = "New user";
   $("#userModalWrap").style.display = "flex";
@@ -3734,6 +3817,7 @@ $("#userCancel").addEventListener("click", () => $("#userModalWrap").style.displ
 window.editUser = id => {
   const u = USERS.find(x => x.id===id); if(!u) return;
   $("#ufId").value = u.id; $("#ufName").value = u.username;
+  $("#ufPackage").value = u.package_id || "";
   $("#ufPass").value = ""; $("#ufPass").required = false;
   $("#ufPass").placeholder = "Leave blank to keep current";
   $("#ufQuota").value = u.quota_gb ?? 0; $("#ufDays").value = 30;
@@ -3749,7 +3833,8 @@ $("#userForm").addEventListener("submit", async e => {
   e.preventDefault();
   const id = $("#ufId").value;
   const payload = {username: $("#ufName").value.trim(),
-    protocols: $$(".ufProto").filter(c => c.checked).map(c => c.value),
+    protocols: $(".ufProto").filter(c => c.checked).map(c => c.value),
+    package_id: $("#ufPackage").value || null,
     quota_gb: parseFloat($("#ufQuota").value||0), days: parseInt($("#ufDays").value||30),
     ip_limit: parseInt($("#ufIpLimit").value||0), hwid_limit: parseInt($("#ufHwidLimit").value||0),
     note: $("#ufNote").value};
@@ -4049,6 +4134,7 @@ $("#passwordForm").addEventListener("submit", async e => {
     tick++;
     if(tick % 3 === 0){
       loadOnline();
+      if($("#page-packages").classList.contains("active")) loadPackages();
       if($("#page-users").classList.contains("active")) loadUsers();
     }
   }, 2000);

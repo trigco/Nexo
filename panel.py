@@ -883,12 +883,34 @@ def _apply_security_material(inbound_id, security, stream):
     return stream
 
 
+def port_is_listening(port):
+    if MOCK:
+        return False
+    result = run(["ss", "-H", "-lntu"], timeout=8)
+    if result.returncode != 0:
+        raise RuntimeError("Unable to inspect listening ports; refusing unsafe inbound creation.")
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        local = fields[4]
+        try:
+            bound_port = int(local.rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        if bound_port == int(port):
+            return True
+    return False
+
+
 def create_inbound(data):
     protocol, network, security, port, stream, max_clients = _validate_inbound(data)
     conn = db()
     try:
         if conn.execute("SELECT 1 FROM inbounds WHERE port = ?", (port,)).fetchone():
             raise ValueError("Another inbound already uses that port.")
+        if port_is_listening(port):
+            raise ValueError(f"Port {port} is already occupied by another service.")
         cursor = conn.execute(
             "INSERT INTO inbounds (remark, protocol, port, network, path, security, "
             "enabled, stream_json, max_clients) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?)",
@@ -939,6 +961,9 @@ def update_inbound(inbound_id, data):
                     (port, inbound_id)).fetchone():
         conn.close()
         raise ValueError("Another inbound already uses that port.")
+    if port != original["port"] and port_is_listening(port):
+        conn.close()
+        raise ValueError(f"Port {port} is already occupied by another service.")
     stream = _apply_security_material(inbound_id, security, stream)
     conn.execute(
         "UPDATE inbounds SET remark = ?, protocol = ?, port = ?, network = ?, "
@@ -2021,6 +2046,11 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
                 if not row:
                     return self.send_json({"error": "User not found."}, status=404)
+                if "ovpn" not in row["protocols"].split(",") or not row["enabled"]:
+                    return self.send_json({"error": "OpenVPN is not enabled for this active user."},
+                                          status=403)
+                audit_event("openvpn.profile_download", "user", row["id"],
+                            request_id=self.headers.get("X-Request-ID", ""))
                 config = ovpn_client_config(row["username"], settings)
                 return self.send_text(
                     config, content_type="application/octet-stream",

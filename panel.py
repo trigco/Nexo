@@ -349,6 +349,26 @@ def clear_login_failures(source_key):
     conn.close()
 
 
+def list_audit_events(limit=200):
+    limit = max(1, min(int(limit), 500))
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, actor, action, target_type, target_id, request_id, outcome, "
+        "details_json, created_at FROM audit_events ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    events = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except (ValueError, TypeError):
+            item["details"] = {}
+        events.append(item)
+    return events
+
+
 def get_settings():
     conn = db()
     rows = conn.execute("SELECT key, value FROM settings").fetchall()
@@ -998,6 +1018,9 @@ def create_inbound(data):
         rollback.commit()
         rollback.close()
         raise
+    audit_event("inbound.create", "inbound", inbound_id,
+                details={"protocol": protocol, "port": port, "network": network,
+                         "security": security})
     return inbound_id
 
 
@@ -1051,6 +1074,9 @@ def update_inbound(inbound_id, data):
         restore.commit()
         restore.close()
         raise
+    audit_event("inbound.update", "inbound", inbound_id,
+                details={"protocol": protocol, "port": port, "network": network,
+                         "security": security})
     return inbound_id
 
 
@@ -1078,6 +1104,8 @@ def delete_inbound(inbound_id):
         restore.commit()
         restore.close()
         raise
+    audit_event("inbound.delete", "inbound", inbound_id,
+                details={"remark": original["remark"], "port": original["port"]})
 
 
 def xray_stats():
@@ -1987,6 +2015,7 @@ def service_action(service_id, action):
     if service_id == "mpanel" and action in ("stop",):
         raise ValueError("The panel cannot stop itself from the panel.")
     run(["systemctl", action, service_id], check=True)
+    audit_event("service." + action, "service", service_id)
     return True
 
 
@@ -2169,6 +2198,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.require_auth():
                     return
                 return self.send_json({"services": services_list()})
+            if path == "/api/audit":
+                if not self.require_auth():
+                    return
+                return self.send_json({"events": list_audit_events()})
             if path == "/api/settings":
                 if not self.require_auth():
                     return

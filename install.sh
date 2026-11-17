@@ -12,6 +12,39 @@ if [ "$(id -u)" != "0" ]; then
   echo "Please run as root (sudo bash install.sh)"; exit 1
 fi
 
+# This build is validated only for Ubuntu 24.04. Refuse unknown hosts rather
+# than applying SSH, firewall-accounting and service changes speculatively.
+if [ -r /etc/os-release ]; then
+  . /etc/os-release
+  if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "24.04" ]; then
+    echo "Unsupported OS: ${PRETTY_NAME:-unknown}. Nexo test installer requires Ubuntu 24.04."
+    exit 1
+  fi
+else
+  echo "Cannot identify operating system; refusing to continue."
+  exit 1
+fi
+
+echo
+echo "WARNING: NEXO TEST INSTALLER"
+echo "- Use only a fresh, disposable Ubuntu 24.04 VPS or a restorable snapshot."
+echo "- This installer changes SSH authentication/banner settings and restarts SSH."
+echo "- It installs/enables services and creates iptables accounting/NAT rules."
+echo "- Keep provider console access and a second SSH session available."
+echo "- DNSTT currently forwards to SSH only; it is not a shared SSH/VLESS multiplexer."
+if [ ! -t 0 ] && [ "${NEXO_ASSUME_YES:-0}" != "1" ]; then
+  echo "No interactive terminal. Review the installer, then set NEXO_ASSUME_YES=1 to proceed deliberately."
+  exit 1
+fi
+if [ "${NEXO_ASSUME_YES:-0}" != "1" ]; then
+  printf 'Type INSTALL NEXO TEST to continue: '
+  IFS= read -r CONFIRM
+  if [ "${CONFIRM}" != "INSTALL NEXO TEST" ]; then
+    echo "Installation cancelled."
+    exit 1
+  fi
+fi
+
 EXISTING_INSTALL=0
 if [ -f /etc/mpanel/panel.db ]; then
   EXISTING_INSTALL=1

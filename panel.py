@@ -2463,6 +2463,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.request_origin_ok():
                     return self.send_json({"error": "Cross-origin request rejected."}, status=403)
                 data = self.body_json()
+                username = data.get("username", "")
+                password = data.get("password", "")
+                if not isinstance(username, str) or not isinstance(password, str):
+                    return self.send_json({"error": "Username and password must be text."},
+                                          status=400)
                 source_key = self.client_address[0] if self.client_address else "unknown"
                 locked, retry_after = login_lock_state(source_key)
                 if locked:
@@ -2473,8 +2478,8 @@ class Handler(BaseHTTPRequestHandler):
                 conn = db()
                 admin = conn.execute("SELECT * FROM admin WHERE id = 1").fetchone()
                 conn.close()
-                if admin and data.get("username") == admin["username"] and \
-                        check_password(data.get("password", ""), admin["password_hash"]):
+                if admin and username == admin["username"] and \
+                        check_password(password, admin["password_hash"]):
                     clear_login_failures(source_key)
                     token = secrets.token_urlsafe(32)
                     csrf = secrets.token_urlsafe(32)

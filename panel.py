@@ -4302,16 +4302,13 @@ async function loadServices(){
   }catch(e){}
 }
 window.svc = async (id, action) => {
-  const buttons = $("[onclick^=\"svc('" + CSS.escape(id) + "')\"]");
-  buttons.forEach(button => { button.disabled = true; button.dataset.originalText = button.textContent; button.textContent = "Working…"; });
+  toast(`${id}: ${action} in progress…`);
   try{
     const result = await api(`/api/services/${encodeURIComponent(id)}/${action}`, {method:"POST"});
     const state = result.services?.find(item => item.id === id);
     toast(state ? `${state.name}: ${state.active ? "Running" : "Stopped"}` : `${id}: ${action} completed`);
   }catch(err){ toast(err.message); }
-  finally{
-    await Promise.all([loadServices(), loadDashboard()]);
-  }
+  finally{ await Promise.all([loadServices(), loadDashboard()]); }
 };
 
 /* ---------- settings ---------- */

@@ -2701,6 +2701,10 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
         <span>Services</span>
       </div>
+      <div class="nav-item" data-page="audit">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        <span>Audit log</span>
+      </div>
       <div class="nav-item" data-page="settings">
         <svg class="ic" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>
         <span>Settings</span>
@@ -2838,6 +2842,20 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <!-- ===== Services ===== -->
       <section class="page" id="page-services">
         <div class="svc-grid" id="serviceList" style="grid-template-columns:repeat(auto-fill,minmax(255px,1fr))"></div>
+      </section>
+
+      <!-- ===== Audit log ===== -->
+      <section class="page" id="page-audit">
+        <div class="card">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:14px">
+            <div><h3>Security &amp; activity history</h3><div class="muted">Recent privileged actions and account events</div></div>
+            <button class="btn ghost small" type="button" onclick="loadAudit()">Refresh log</button>
+          </div>
+          <div class="tblwrap"><table>
+            <thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Outcome</th><th>Details</th></tr></thead>
+            <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading audit events…</td></tr></tbody>
+          </table></div>
+        </div>
       </section>
 
       <!-- ===== Settings ===== -->
@@ -3086,7 +3104,7 @@ document.addEventListener("click", e => {
 
 /* ---------- navigation ---------- */
 const PAGE_TITLES = {dashboard:"Dashboard", users:"Users", online:"Online clients",
-  inbounds:"Inbounds", services:"Services", settings:"Settings"};
+  inbounds:"Inbounds", services:"Services", audit:"Audit log", settings:"Settings"};
 function gotoPage(name){
   $$(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.page===name));
   $$(".page").forEach(p => p.classList.toggle("active", p.id==="page-"+name));
@@ -3095,6 +3113,7 @@ function gotoPage(name){
   if(name==="online") loadOnline();
   if(name==="inbounds") loadInbounds();
   if(name==="services") loadServices();
+  if(name==="audit") loadAudit();
   if(name==="dashboard") loadDashboard();
 }
 $$(".nav-item").forEach(n => n.addEventListener("click", () => gotoPage(n.dataset.page)));
@@ -3114,7 +3133,7 @@ $("#logoutBtn").addEventListener("click", async () => {
   location.reload();
 });
 $("#refreshBtn").addEventListener("click", () => {
-  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); toast("Refreshed.");
+  loadDashboard(); loadUsers(); loadInbounds(); loadServices(); loadAudit(); toast("Refreshed.");
 });
 function showApp(){
   $("#loginView").style.display = "none";
@@ -3722,6 +3741,22 @@ window.removeInbound = async id => {
 };
 
 /* ---------- services ---------- */
+async function loadAudit(){
+  try{
+    const d = await api("/api/audit");
+    const events = d.events || [];
+    $("#auditRows").innerHTML = events.map(e => {
+      const details = JSON.stringify(e.details || {});
+      const target = [e.target_type, e.target_id].filter(Boolean).join(" · ") || "—";
+      const outcome = e.outcome === "success" ? '<span class="pill ok">Success</span>'
+        : '<span class="pill bad">'+esc(e.outcome)+'</span>';
+      return '<tr><td class="mono">'+esc((e.created_at||"").replace("T"," "))+'</td>'
+        +'<td><b>'+esc(e.action)+'</b></td><td>'+esc(target)+'</td>'
+        +'<td>'+outcome+'</td><td class="mono" style="max-width:320px;white-space:normal;overflow-wrap:anywhere">'+esc(details)+'</td></tr>';
+    }).join("") || '<tr><td colspan="5" class="muted">No audit events yet.</td></tr>';
+  }catch(e){ $("#auditRows").innerHTML = '<tr><td colspan="5" class="muted">'+esc(e.message)+'</td></tr>'; }
+}
+
 async function loadServices(){
   try{
     const d = await api("/api/services");

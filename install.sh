@@ -80,6 +80,7 @@ Set PANEL_MOCK=1 to run without touching the system (development and tests).
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -456,6 +457,73 @@ def get_settings():
     settings = dict(DEFAULT_SETTINGS)
     settings.update({row["key"]: row["value"] for row in rows})
     return settings
+
+
+def _valid_host(value, allow_empty=False):
+    if not isinstance(value, str):
+        return False
+    value = value.strip().rstrip(".")
+    if not value:
+        return allow_empty
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        pass
+    if len(value) > 253 or not re.fullmatch(r"[A-Za-z0-9.-]+", value):
+        return False
+    labels = value.split(".")
+    return all(1 <= len(label) <= 63 and
+               not label.startswith("-") and not label.endswith("-")
+               for label in labels)
+
+
+def validate_settings(data):
+    if not isinstance(data, dict):
+        raise ValueError("Settings payload must be an object.")
+    unknown = set(data) - set(DEFAULT_SETTINGS)
+    if unknown:
+        raise ValueError("Unknown setting key: " + ", ".join(sorted(unknown)))
+    clean = {}
+    port_keys = {
+        "panel_port", "ssh_port", "ws_port", "wss_port", "xray_port",
+        "xray_vmess_port", "ovpn_port", "dnstt_port",
+    }
+    host_keys = {"server_host", "cf_ws_host", "sni_host", "dnstt_domain"}
+    for key, value in data.items():
+        if key in port_keys:
+            if isinstance(value, bool):
+                raise ValueError(f"{key} must be a valid TCP/UDP port.")
+            try:
+                port = int(value)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(f"{key} must be a valid TCP/UDP port.")
+            if not 1 <= port <= 65535:
+                raise ValueError(f"{key} must be between 1 and 65535.")
+            clean[key] = str(port)
+        elif key in host_keys:
+            if not _valid_host(value, allow_empty=(key in {"server_host", "dnstt_domain"})):
+                raise ValueError(f"{key} must be a valid hostname or IP address.")
+            clean[key] = value.strip().rstrip(".")
+        elif key == "xray_path":
+            if not isinstance(value, str) or not value.startswith("/") or \\
+                    len(value) > 128 or not re.fullmatch(r"/[A-Za-z0-9/_-]*", value):
+                raise ValueError("xray_path must be a safe absolute URL path.")
+            clean[key] = value
+        elif key == "ovpn_proto":
+            if value not in {"udp", "tcp", "udp6", "tcp6"}:
+                raise ValueError("ovpn_proto must be udp, tcp, udp6 or tcp6.")
+            clean[key] = value
+        elif key == "brand":
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9 _-]{2,32}", value):
+                raise ValueError("brand must be 2-32 safe characters.")
+            clean[key] = value.strip()
+        elif key == "telegram":
+            if not isinstance(value, str) or not re.fullmatch(
+                    r"https://t\.me/[A-Za-z0-9_/?=-]{1,120}", value):
+                raise ValueError("telegram must be an HTTPS t.me link.")
+            clean[key] = value
+    return clean
 
 
 def set_setting(key, value):
@@ -2680,12 +2748,11 @@ class Handler(BaseHTTPRequestHandler):
                 service_action(match.group(1), match.group(2))
                 return self.send_json({"ok": True, "services": services_list()})
             if path == "/api/settings":
-                data = self.body_json()
+                data = validate_settings(self.body_json())
                 changed_keys = []
                 for key, value in data.items():
-                    if key in DEFAULT_SETTINGS:
-                        set_setting(key, value)
-                        changed_keys.append(key)
+                    set_setting(key, value)
+                    changed_keys.append(key)
                 if changed_keys:
                     audit_event("settings.update", "settings", "server",
                                 request_id=self.headers.get("X-Request-ID", ""),

@@ -1486,9 +1486,11 @@ def update_user(user_id, data):
             check_inbound_capacity(new_protocols, exclude_user_id=user_id)
             added = [p for p in new_protocols if p not in protocols]
             if "ssh" in added and not ssh_user_exists(row["username"]):
-                ssh_create_user(row["username"],
-                                data.get("password") or row["password"],
-                                row["expire_date"])
+                ssh_password = data.get("password") or row["password"]
+                if not ssh_password:
+                    ssh_password = secrets.token_urlsafe(12)
+                    credential_once = ssh_password
+                ssh_create_user(row["username"], ssh_password, row["expire_date"])
             if "ovpn" in added:
                 ovpn_create_user(row["username"])
             if ({"trojan", "shadowsocks"} & set(new_protocols)) and not row["password"]:
@@ -1521,7 +1523,7 @@ def update_user(user_id, data):
                 raise RuntimeError("chpasswd failed.")
         row["password"] = (new_password if ({"trojan", "shadowsocks"} & set(protocols))
                            else "")
-        if {"trojan", "shadowsocks"} & set(protocols):
+        if {"ssh", "trojan", "shadowsocks"} & set(protocols):
             credential_once = new_password
     if "note" in data:
         row["note"] = data["note"]

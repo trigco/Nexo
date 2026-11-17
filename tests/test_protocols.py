@@ -71,7 +71,7 @@ class WebSocketTests(unittest.TestCase):
         first, second = client.recv(2)
         self.assertEqual(first, 0x88)
         self.assertEqual(second, 2)
-        self.assertEqual(client.recv(2), b"\\x03\\xe8")
+        self.assertEqual(client.recv(2), b"\x03\xe8")
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
         client.close()

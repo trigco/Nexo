@@ -14,20 +14,33 @@ A premium, 3x-ui style management panel for a multi-protocol VPS — one auto-in
 - **DNSTT** — DNS tunnel server management (needs inbound UDP 53 open on the VPS firewall)
 - **Services page** — start / stop / restart SSH, WebSocket proxy, stunnel, Xray, OpenVPN, DNSTT; shows *Not installed* vs *Stopped* honestly
 
-## Install
+## Test install (Ubuntu 24.04 only)
 
-On a fresh **Ubuntu 24.04** VPS, as root:
+This branch is a **test build**, not a production release. Use only a fresh disposable VPS or a restorable snapshot with provider-console access. The installer changes SSH settings, restarts SSH, installs/enables services and creates iptables accounting/NAT rules. Keep a second SSH session open.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/trigco/Nexo/main/install.sh -o install.sh
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/trigco/Nexo/test/web-panel-release/install.sh -o install-nexo-test.sh
+less install-nexo-test.sh
+sudo bash install-nexo-test.sh
 ```
 
-On a fresh install the installer prints the initial admin credentials and saves them to `/root/mpanel-admin.txt`. On upgrades it preserves the existing admin password and does not rotate credentials. Before changing services it creates a root-only backup under `/var/backups/nexo/`. Do not treat the installer as a substitute for a tested VPS snapshot and restore drill.
+Type `INSTALL NEXO TEST` at the confirmation prompt. The script refuses non-Ubuntu-24.04 hosts. Do not use the `main` branch installer for this test build.
 
-Default ports: panel `8443` (HTTPS, self-signed), SSH `22`, WS proxy `80`, stunnel `443`, OpenVPN `33500/udp`.
+Default panel: `https://SERVER_IP:8443` (self-signed certificate warning expected). On a first install, credentials are saved to `/root/mpanel-admin.txt` with mode 0600.
 
-> Note: some cloud trial firewalls block inbound ports (e.g. UDP 53 for DNSTT, or 8443). If the panel does not open from the internet, check your provider's firewall first — the service itself logs `Nexo listening on https://0.0.0.0:8443` when it is up. Current device/HWID enforcement is intentionally disabled because these protocols do not provide a reliable stable hardware identity.
+Before installation, allow these inbound ports in the VPS provider firewall/security group as needed:
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 22 | TCP | SSH administration |
+| 80 | TCP | SSH WebSocket |
+| 443 | TCP | SSH TLS/stunnel |
+| 8443 | TCP | Nexo panel |
+| 33500 | UDP | OpenVPN |
+| 53 | UDP | DNSTT only; currently SSH-forwarding only |
+
+Do not open ports you do not intend to test. The DNSTT service is not a shared SSH/VLESS multiplexer. OpenVPN existing sessions are not yet forcibly disconnected when a user reaches quota or expiry. A green CI run is not a substitute for the VPS smoke-test checklist in `docs/V1-VPS-SMOKE-TEST.md`.
+
 
 ## Files
 

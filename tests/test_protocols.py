@@ -293,8 +293,8 @@ class PersistenceAndSecurityTests(unittest.TestCase):
 
     def test_ssh_traffic_counter_sums_only_upload_and_download_return_rules(self):
         outputs = {
-            panel.chain_name("alice"): "Chain out\\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
-            panel.chain_in_name("alice"): "Chain in\\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
+            panel.chain_name("alice"): "Chain out\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
+            panel.chain_in_name("alice"): "Chain in\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
         }
         def fake_run(cmd, **kwargs):
             return panel.subprocess.CompletedProcess(

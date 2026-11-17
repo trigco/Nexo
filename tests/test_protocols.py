@@ -8,6 +8,7 @@ import tempfile
 import time
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -285,6 +286,19 @@ class PersistenceAndSecurityTests(unittest.TestCase):
             panel.create_user({"username": "badquota", "protocols": ["ssh"],
                                "quota_gb": -1})
 
+
+    def test_ssh_traffic_counter_sums_only_upload_and_download_return_rules(self):
+        outputs = [
+            "Chain out (1 references)\\n pkts bytes target\\n 2 100 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0\\n 2 100 CONNMARK all -- * * 0.0.0.0/0 0.0.0.0/0",
+            "Chain in (1 references)\\n pkts bytes target\\n 3 200 RETURN all -- * * 0.0.0.0/0 0.0.0.0/0",
+        ]
+        completed = [
+            panel.subprocess.CompletedProcess([], 0, outputs[0], ""),
+            panel.subprocess.CompletedProcess([], 0, outputs[1], ""),
+        ]
+        with patch.object(panel, "MOCK", False), patch.object(
+                panel, "run", side_effect=completed):
+            self.assertEqual(panel.ssh_chain_bytes("alice"), 300)
 
     def test_manual_lock_is_not_undone_by_quota_enforcer(self):
         conn = panel.db()

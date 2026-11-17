@@ -1,4 +1,5 @@
 import base64
+import http.client
 import os
 import socket
 import sys
@@ -6,6 +7,7 @@ import tempfile
 import time
 import threading
 import unittest
+from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, ROOT)
@@ -198,6 +200,65 @@ class PersistenceAndSecurityTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def start_test_server(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), panel.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread
+
+    def test_login_sets_persistent_session_and_csrf_is_required(self):
+        server, thread = self.start_test_server()
+        port = server.server_address[1]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        body = json.dumps({"username": "admin", "password": "correct-horse-battery"})
+        conn.request("POST", "/api/login", body=body,
+                     headers={"Content-Type": "application/json",
+                              "Origin": f"http://127.0.0.1:{port}"})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        cookies = [v for k, v in response.getheaders() if k.lower() == "set-cookie"]
+        session_cookie = next(v.split(";", 1)[0] for v in cookies
+                              if v.startswith("mpanel_session="))
+        csrf_cookie = next(v.split(";", 1)[0] for v in cookies
+                           if v.startswith("mpanel_csrf="))
+        csrf = csrf_cookie.split("=", 1)[1]
+
+        conn.request("POST", "/api/settings", body="{}",
+                     headers={"Content-Type": "application/json",
+                              "Cookie": session_cookie + "; " + csrf_cookie,
+                              "Origin": f"http://127.0.0.1:{port}"})
+        denied = conn.getresponse()
+        self.assertEqual(denied.status, 403)
+        denied.read()
+
+        conn.request("POST", "/api/settings", body="{}",
+                     headers={"Content-Type": "application/json",
+                              "Cookie": session_cookie + "; " + csrf_cookie,
+                              "X-CSRF-Token": csrf,
+                              "Origin": f"http://127.0.0.1:{port}"})
+        allowed = conn.getresponse()
+        self.assertEqual(allowed.status, 200)
+        allowed.read()
+        conn.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+        # A new application process using the same SQLite file must accept
+        # the still-valid opaque session cookie.
+        server2, thread2 = self.start_test_server()
+        port2 = server2.server_address[1]
+        conn2 = http.client.HTTPConnection("127.0.0.1", port2, timeout=3)
+        conn2.request("GET", "/api/me", headers={"Cookie": session_cookie})
+        resumed = conn2.getresponse()
+        self.assertEqual(resumed.status, 200)
+        self.assertTrue(json.loads(resumed.read())["logged_in"])
+        conn2.close()
+        server2.shutdown()
+        server2.server_close()
+        thread2.join(timeout=2)
 
     def test_ssh_only_password_is_not_persisted_or_serialized(self):
         created = panel.create_user({

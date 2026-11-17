@@ -315,6 +315,16 @@ class PersistenceAndSecurityTests(unittest.TestCase):
             panel.delete_user(created["id"])
             revoke.assert_called_once_with(cert_name)
 
+    def test_disabled_openvpn_user_is_added_to_connection_deny_list(self):
+        created = panel.create_user({
+            "username": "blockedvpn", "protocols": ["ovpn"],
+        })
+        panel.update_user(created["id"], {"enabled": False})
+        denied = panel.ovpn_denied_names()
+        self.assertIn(created["package_snapshot"].get("name", "") or
+                      next(row["ovpn_cert_name"] for row in panel.list_users_as_rows()
+                           if row["id"] == created["id"]), denied)
+
     def test_protocol_removal_is_rejected_until_revoke_flow_exists(self):
         created = panel.create_user({
             "username": "keepuser", "protocols": ["ssh"],

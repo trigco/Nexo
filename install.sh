@@ -4362,9 +4362,13 @@ async function loadServices(){
   }catch(e){}
 }
 window.svc = async (id, action) => {
-  try{ await api(`/api/services/${id}/${action}`, {method:"POST"});
-    toast(id + " " + action + " sent."); setTimeout(()=>{ loadServices(); loadDashboard(); }, 600); }
-  catch(err){ toast(err.message); }
+  toast(`${id}: ${action} in progress…`);
+  try{
+    const result = await api(`/api/services/${encodeURIComponent(id)}/${action}`, {method:"POST"});
+    const state = result.services?.find(item => item.id === id);
+    toast(state ? `${state.name}: ${state.active ? "Running" : "Stopped"}` : `${id}: ${action} completed`);
+  }catch(err){ toast(err.message); }
+  finally{ await Promise.all([loadServices(), loadDashboard()]); }
 };
 
 /* ---------- settings ---------- */

@@ -3318,6 +3318,7 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
         <label><input type="checkbox" class="ufProto" value="shadowsocks"> Shadowsocks</label>
         <label><input type="checkbox" class="ufProto" value="ovpn"> OpenVPN</label>
       </div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Protocol removal is blocked until the matching account/certificate revoke flow is completed. Delete and recreate the user to remove a protocol safely.</div>
     </div>
     <div class="field" id="ufIbWrap" style="margin-top:10px;display:none"><label>Inbounds — this client is added to the ticked inbounds</label>
       <div class="ibpick" id="ufInbounds"></div>

@@ -3339,7 +3339,7 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
             <div class="legend">
               <span><i style="background:#2ee6a8"></i>Download</span>
               <span><i style="background:#2f7bff"></i>Upload</span>
-              <span id="netPeak">Peak —</span><span id="netLow">Low —</span><span style="margin-left:auto" id="netTotals">—</span>
+              <span id="rxPeak">↓ Peak —</span><span id="rxLow">↓ Low —</span><span id="txPeak">↑ Peak —</span><span id="txLow">↑ Low —</span><span style="margin-left:auto" id="netTotals">—</span>
             </div>
           </div>
           <div class="card">
@@ -4001,9 +4001,10 @@ function drawChart(){
   ctx.fillStyle="#718198";ctx.font="10px system-ui";
   ctx.fillText(fmt(data[0].t),g.L,h-5);ctx.fillText(fmt(data[data.length-1].t),Math.max(g.L+g.iw-55,g.L),h-5);
   const rx=extrema(data,"rx"),tx=extrema(data,"tx");
-  const peakNet=Math.max(rx?.peak||0,tx?.peak||0),lowNet=Math.min(rx?.low||0,tx?.low||0);
-  $("#netPeak").textContent="Peak "+fmtSpeed(peakNet);
-  $("#netLow").textContent="Low "+fmtSpeed(lowNet);
+  $("#rxPeak").textContent="↓ Peak "+fmtSpeed(rx?.peak||0);
+  $("#rxLow").textContent="↓ Low "+fmtSpeed(rx?.low||0);
+  $("#txPeak").textContent="↑ Peak "+fmtSpeed(tx?.peak||0);
+  $("#txLow").textContent="↑ Low "+fmtSpeed(tx?.low||0);
 }
 function drawResourceChart(){
   const cv=$("#resourceChart");if(!cv)return;

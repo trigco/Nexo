@@ -1799,11 +1799,19 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # -- plumbing ----------------------------------------------------------
+    def _security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
     def send_json(self, payload, status=200, headers=None):
         body = json.dumps(payload).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self._security_headers()
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -1815,16 +1823,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self._security_headers()
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
     def body_json(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length") or "0"
+        if not raw_length.isdigit():
+            raise ValueError("Invalid Content-Length.")
+        length = int(raw_length)
+        if length > MAX_REQUEST_BODY:
+            raise ValueError("Request body exceeds 1 MiB limit.")
         if not length:
             return {}
-        return json.loads(self.rfile.read(length) or b"{}")
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("Request body must be valid UTF-8 JSON.")
+        if not isinstance(data, dict):
+            raise ValueError("JSON request body must be an object.")
+        return data
+
+    def request_origin_ok(self):
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        parsed = urlparse(origin)
+        host = (self.headers.get("Host") or "").lower()
+        return parsed.scheme in ("https", "http") and parsed.netloc.lower() == host
 
     def session_user(self):
         cookie = self.headers.get("Cookie") or ""
@@ -1833,7 +1861,15 @@ class Handler(BaseHTTPRequestHandler):
             part = part.strip()
             if part.startswith("mpanel_session="):
                 token = part.split("=", 1)[1]
-        if token and token in _sessions and _sessions[token] > time.time():
+        if not token or len(token) > 256:
+            return None
+        conn = db()
+        row = conn.execute(
+            "SELECT expires_at, revoked_at FROM sessions WHERE token_hash=?",
+            (token_hash(token),),
+        ).fetchone()
+        conn.close()
+        if row and not row["revoked_at"] and int(row["expires_at"]) > int(time.time()):
             return token
         return None
 
@@ -1842,6 +1878,28 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.send_json({"error": "Not logged in."}, status=401)
         return False
+
+    def require_csrf(self):
+        token = self.session_user()
+        if not token:
+            self.send_json({"error": "Not logged in."}, status=401)
+            return False
+        if not self.request_origin_ok():
+            self.send_json({"error": "Cross-origin request rejected."}, status=403)
+            return False
+        supplied = self.headers.get("X-CSRF-Token") or ""
+        conn = db()
+        row = conn.execute(
+            "SELECT csrf_hash FROM sessions WHERE token_hash=? AND revoked_at IS NULL",
+            (token_hash(token),),
+        ).fetchone()
+        conn.close()
+        if not row or not supplied or not hmac.compare_digest(
+                row["csrf_hash"], token_hash(supplied)):
+            self.send_json({"error": "CSRF validation failed. Reload and sign in again."},
+                           status=403)
+            return False
+        return True
 
     # -- routes ------------------------------------------------------------
     def do_GET(self):
@@ -1912,28 +1970,63 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/api/login":
+                if not self.request_origin_ok():
+                    return self.send_json({"error": "Cross-origin request rejected."}, status=403)
                 data = self.body_json()
+                source_key = self.client_address[0] if self.client_address else "unknown"
+                locked, retry_after = login_lock_state(source_key)
+                if locked:
+                    return self.send_json(
+                        {"error": "Too many login attempts. Try again later.",
+                         "retry_after": retry_after}, status=429,
+                        headers={"Retry-After": str(retry_after)})
                 conn = db()
                 admin = conn.execute("SELECT * FROM admin WHERE id = 1").fetchone()
                 conn.close()
                 if admin and data.get("username") == admin["username"] and \
                         check_password(data.get("password", ""), admin["password_hash"]):
+                    clear_login_failures(source_key)
                     token = secrets.token_urlsafe(32)
-                    _sessions[token] = time.time() + 7 * 86400
-                    return self.send_json(
-                        {"ok": True},
-                        headers={"Set-Cookie":
-                                 f"mpanel_session={token}; Path=/; HttpOnly; "
-                                 "SameSite=Lax; Max-Age=604800"},
+                    csrf = secrets.token_urlsafe(32)
+                    now = int(time.time())
+                    conn = db()
+                    conn.execute(
+                        "INSERT INTO sessions (token_hash, csrf_hash, created_at, expires_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (token_hash(token), token_hash(csrf), now, now + SESSION_TTL_SECONDS),
                     )
+                    conn.commit()
+                    conn.close()
+                    audit_event("auth.login", request_id=self.headers.get("X-Request-ID", ""))
+                    return self.send_json(
+                        {"ok": True, "csrf_token": csrf},
+                        headers={"Set-Cookie":
+                                 f"mpanel_session={token}; Path=/; HttpOnly; Secure; "
+                                 "SameSite=Strict; Max-Age=604800"},
+                    )
+                record_login_failure(source_key)
                 return self.send_json({"error": "Wrong username or password."},
                                       status=403)
             if path == "/api/logout":
+                if not self.require_csrf():
+                    return
                 token = self.session_user()
                 if token:
-                    _sessions.pop(token, None)
-                return self.send_json({"ok": True})
+                    conn = db()
+                    conn.execute("UPDATE sessions SET revoked_at=? WHERE token_hash=?",
+                                 (int(time.time()), token_hash(token)))
+                    conn.commit()
+                    conn.close()
+                    audit_event("auth.logout", request_id=self.headers.get("X-Request-ID", ""))
+                return self.send_json(
+                    {"ok": True},
+                    headers={"Set-Cookie":
+                             "mpanel_session=; Path=/; HttpOnly; Secure; "
+                             "SameSite=Strict; Max-Age=0"},
+                )
             if not self.require_auth():
+                return
+            if not self.require_csrf():
                 return
             if path == "/api/users":
                 user = create_user(self.body_json())
@@ -1982,12 +2075,23 @@ class Handler(BaseHTTPRequestHandler):
                     conn.close()
                     return self.send_json({"error": "Current password is wrong."},
                                           status=403)
+                new_password = data.get("new", "")
+                if not isinstance(new_password, str) or len(new_password) < 12:
+                    conn.close()
+                    return self.send_json({"error": "New password must be at least 12 characters."},
+                                          status=400)
                 conn.execute(
                     "UPDATE admin SET password_hash = ? WHERE id = 1",
                     (hash_password(data["new"]),),
                 )
+                current_token = self.session_user()
+                conn.execute(
+                    "UPDATE sessions SET revoked_at=? WHERE revoked_at IS NULL AND token_hash != ?",
+                    (int(time.time()), token_hash(current_token or "")),
+                )
                 conn.commit()
                 conn.close()
+                audit_event("auth.password_change", request_id=self.headers.get("X-Request-ID", ""))
                 return self.send_json({"ok": True})
             if path == "/api/dnstt/restart":
                 service_action("dnstt", "restart")

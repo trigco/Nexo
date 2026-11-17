@@ -425,6 +425,11 @@ def validate_settings(data):
     if unknown:
         raise ValueError("Unknown setting key: " + ", ".join(sorted(unknown)))
     clean = {}
+    current_settings = get_settings()
+    service_managed_ports = {
+        "ssh_port", "ws_port", "wss_port", "xray_port",
+        "xray_vmess_port", "ovpn_port", "dnstt_port",
+    }
     port_keys = {
         "panel_port", "ssh_port", "ws_port", "wss_port", "xray_port",
         "xray_vmess_port", "ovpn_port", "dnstt_port",
@@ -432,6 +437,9 @@ def validate_settings(data):
     host_keys = {"server_host", "cf_ws_host", "sni_host", "dnstt_domain"}
     for key, value in data.items():
         if key in port_keys:
+            if key in service_managed_ports and str(value) != str(current_settings.get(key, "")):
+                raise ValueError(
+                    f"{key} is read-only until its service configuration is managed by Nexo.")
             if isinstance(value, bool):
                 raise ValueError(f"{key} must be a valid TCP/UDP port.")
             try:
@@ -451,8 +459,8 @@ def validate_settings(data):
                 raise ValueError("xray_path must be a safe absolute URL path.")
             clean[key] = value
         elif key == "ovpn_proto":
-            if value not in {"udp", "tcp", "udp6", "tcp6"}:
-                raise ValueError("ovpn_proto must be udp, tcp, udp6 or tcp6.")
+            if value != "udp":
+                raise ValueError("OpenVPN transport is currently fixed to UDP by the installed service.")
             clean[key] = value
         elif key == "brand":
             if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9 _-]{2,32}", value):

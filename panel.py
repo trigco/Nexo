@@ -740,6 +740,14 @@ def xray_save(config):
             json.dump(config, fh, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
+        # Xray runs as root:xray. mkstemp creates mode 0600 root:root,
+        # and os.replace preserves those attributes unless corrected first.
+        try:
+            shutil.chown(candidate, user="root", group="xray")
+        except (LookupError, OSError) as exc:
+            raise RuntimeError("Xray group is missing; reinstall/repair Xray before publishing config: "
+                               + str(exc))
+        os.chmod(candidate, 0o640)
         test = run(["xray", "run", "-test", "-config", candidate], timeout=30)
         if test.returncode != 0:
             detail = (test.stderr or test.stdout or "unknown Xray config error").strip()
@@ -752,6 +760,8 @@ def xray_save(config):
             detail = (restart.stderr or restart.stdout or "Xray service is not active").strip()
             if had_previous and os.path.exists(backup):
                 shutil.copy2(backup, candidate)
+                shutil.chown(candidate, user="root", group="xray")
+                os.chmod(candidate, 0o640)
                 os.replace(candidate, XRAY_CONFIG)
                 run(["systemctl", "restart", "xray"], timeout=45)
             raise RuntimeError("Xray failed after config publish; previous config restored: "
@@ -1839,7 +1849,8 @@ def create_user(data):
         if "ovpn" in protocols:
             ovpn_create_user(ovpn_cert_name)
             ovpn_created = True
-        xray_sync_users(list_users_as_rows())
+        if set(protocols) & XRAY_USER_PROTOCOLS:
+            xray_sync_users(list_users_as_rows())
     except Exception:
         # Compensate external resources in reverse order. Keep the original
         # failure visible; cleanup is best-effort and never hides it.
@@ -1857,10 +1868,11 @@ def create_user(data):
         cleanup.execute("DELETE FROM users WHERE id = ?", (user_id,))
         cleanup.commit()
         cleanup.close()
-        try:
-            xray_sync_users(list_users_as_rows())
-        except Exception:
-            pass
+        if set(protocols) & XRAY_USER_PROTOCOLS:
+            try:
+                xray_sync_users(list_users_as_rows())
+            except Exception:
+                pass
         raise
     settings = get_settings()
     conn = db()

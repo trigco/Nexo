@@ -298,6 +298,45 @@ class PersistenceAndSecurityTests(unittest.TestCase):
         self.assertNotIn("password", listed)
         self.assertNotIn("credential_once", listed)
 
+    def test_ssh_only_user_does_not_depend_on_xray_sync(self):
+        with patch.object(panel, "xray_sync_users",
+                          side_effect=RuntimeError("Xray is unavailable")) as sync:
+            created = panel.create_user({
+                "username": "sshwithoutxray", "protocols": ["ssh"],
+                "password": "initial-secret-123",
+            })
+        self.assertEqual(created["username"], "sshwithoutxray")
+        sync.assert_not_called()
+
+    def test_vless_user_still_requires_xray_sync(self):
+        with patch.object(panel, "xray_sync_users",
+                          side_effect=RuntimeError("Xray config rejected")) as sync:
+            with self.assertRaisesRegex(RuntimeError, "Xray config rejected"):
+                panel.create_user({
+                    "username": "vlessrequiresxray", "protocols": ["vless"],
+                })
+        sync.assert_called_once()
+
+    def test_service_action_reports_only_verified_state(self):
+        with patch.object(panel, "run",
+                          return_value=__import__("subprocess").CompletedProcess(
+                              ["systemctl"], 0, "", "")), \
+             patch.object(panel, "service_active", return_value=True):
+            result = panel.service_action("xray", "restart")
+        self.assertEqual(result, {"ok": True, "active": True})
+
+    def test_service_action_fails_when_requested_state_is_not_reached(self):
+        with patch.object(panel, "run",
+                          return_value=__import__("subprocess").CompletedProcess(
+                              ["systemctl"], 0, "", "")), \
+             patch.object(panel, "service_active", return_value=False), \
+             patch.object(panel.time, "sleep"), \
+             patch.object(panel.time, "monotonic", side_effect=[0, 13, 13, 13]), \
+             patch.object(panel, "audit_event") as audit:
+            with self.assertRaisesRegex(RuntimeError, "did not become active"):
+                panel.service_action("xray", "start")
+        audit.assert_not_called()
+
     def test_invalid_inbound_assignment_is_rejected_not_treated_as_all(self):
         with self.assertRaises(ValueError):
             panel.clean_inbound_ids({"inbound_ids": [999999]})

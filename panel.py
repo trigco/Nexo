@@ -3036,7 +3036,44 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
   background:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.05) 50%,transparent 70%);
   animation:shimmer 1.3s infinite}
 @keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+
+/* ---------- responsive telemetry overview ---------- */
+.kpi.metric-card{display:block;min-width:0;padding:16px 17px;position:relative;overflow:hidden}
+.metric-head{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.metric-icon{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:none}
+.metric-icon .ic{width:19px;height:19px}
+.cpu-icon{color:#65a9ff;background:rgba(59,139,255,.13)}
+.ram-icon{color:#b49aff;background:rgba(154,123,255,.13)}
+.disk-icon{color:#ffbd68;background:rgba(255,184,77,.13)}
+.users-icon{color:#45dfb1;background:rgba(46,230,168,.12)}
+.metric-label{font-size:10px;letter-spacing:1.25px;color:var(--dim);font-weight:800}
+.metric-value{display:flex;align-items:baseline;gap:4px;line-height:1.1}
+.metric-value b{font-size:29px;letter-spacing:-1px;font-weight:800;font-variant-numeric:tabular-nums}
+.metric-value>span{font-size:12px;color:var(--dim);font-weight:650}
+.metric-detail{font-size:11.5px;color:var(--dim);margin-top:6px;min-height:16px;overflow-wrap:anywhere}
+.metric-extrema{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:10px;color:var(--dim2);font-variant-numeric:tabular-nums}
+.metric-extrema span:first-child{color:#f0b86a}
+.metric-extrema span:last-child{color:#61d9b0}
+.metric-foot{display:flex;align-items:center;gap:9px;margin-top:13px;font-size:10px;color:var(--dim)}
+.metric-track{height:5px;background:#1a2536;border-radius:20px;overflow:hidden;flex:1}
+.metric-track i{display:block;height:100%;width:0;background:var(--grad);border-radius:20px;transition:width .5s}
+.spark{height:34px;margin-top:7px}
+.chart-toolbar{display:flex;align-items:center;justify-content:space-between;margin:-4px 0 9px}
+.range-pills{display:flex;gap:4px;background:#080d15;border:1px solid var(--line);border-radius:10px;padding:3px}
+.range-btn{border:0;background:transparent;color:var(--dim);font-size:10.5px;padding:5px 9px;border-radius:7px}
+.range-btn.active{background:#1b3455;color:#dcecff}
+.chart-live{display:inline-flex;align-items:center;gap:6px;color:var(--ok);font-size:9px;letter-spacing:.8px;font-weight:800}
+.chart-live i{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.history-chart{width:100%;height:172px;display:block}
+.resource-legend{display:flex;align-items:center;gap:15px;color:var(--dim);font-size:11px;margin:-3px 0 7px}
+.resource-legend i{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px}
+.cpu-dot{background:#3b8bff}.ram-dot{background:#a58aff}
+.resource-legend .chart-live{margin-left:auto}
+.resource-stats{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:10px;color:var(--dim2);margin-top:4px;font-variant-numeric:tabular-nums}
+.title-icon-only{letter-spacing:.1px}
+#netChart{height:190px;touch-action:pan-y}
 @media(max-width:1020px){.kpis{grid-template-columns:repeat(2,1fr)}}
+
 @media(max-width:860px){
   .shell{flex-direction:column}
   aside{display:none}
@@ -3076,6 +3113,38 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
     max-height:94dvh;overflow-y:auto;animation:sheet .32s cubic-bezier(.2,.8,.25,1)}
   @keyframes sheet{from{transform:translateY(46px);opacity:.4}to{transform:none;opacity:1}}
   .searchbar .btn{width:100%}
+  .metric-value b{font-size:26px}
+  .metric-card{min-height:166px}
+  .top-actions{width:100%;justify-content:flex-end}
+  .topbar{align-items:flex-start}
+}
+@media(max-width:540px){
+  main{padding:13px 10px calc(100px + env(safe-area-inset-bottom))}
+  .kpis{gap:8px}
+  .kpi.metric-card{padding:12px 11px;border-radius:15px;min-height:157px}
+  .metric-head{gap:7px;margin-bottom:8px}
+  .metric-icon{width:29px;height:29px;border-radius:9px}
+  .metric-icon .ic{width:17px;height:17px}
+  .metric-label{font-size:9px;letter-spacing:.9px}
+  .metric-value b{font-size:23px}
+  .metric-detail{font-size:10px}
+  .metric-extrema{font-size:9px;gap:8px}
+  .spark{height:27px}
+  .card{padding:13px;border-radius:16px}
+  .card h3{font-size:13px;gap:7px}
+  #netChart,.history-chart{height:158px}
+  .range-btn{padding:5px 7px;font-size:10px}
+  .chart-live{font-size:8px}
+  .legend{font-size:10px;gap:10px;flex-wrap:wrap}
+  .resource-stats{font-size:9px}
+  .topbar h2{font-size:19px}
+  .topbar .sub{font-size:11px}
+  .chip{padding:6px 10px}
+}
+@media(max-width:360px){
+  .metric-value b{font-size:21px}
+  .metric-extrema{gap:5px;font-size:8px}
+  .kpi.metric-card{padding:10px 9px}
 }
 </style>
 </head>
@@ -3169,27 +3238,40 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
       <!-- ===== Dashboard ===== -->
       <section class="page active loading" id="page-dashboard">
         <div class="kpis">
-          <div class="kpi">
-            <div class="ring"><svg width="76" height="76"><circle class="bgc" cx="38" cy="38" r="32" fill="none" stroke-width="7"/><circle class="fgc" id="ringCpu" cx="38" cy="38" r="32" fill="none" stroke-width="7" stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="201"/></svg><div class="val" id="valCpu">–</div></div>
-            <div class="meta"><small>CPU</small><b id="loadTxt">load —</b><canvas class="spark" id="sparkCpu" width="300" height="60"></canvas><span class="avgpeak muted" id="cpuAvg"></span></div>
+          <div class="kpi metric-card" title="Processor utilization">
+            <div class="metric-head"><span class="metric-icon cpu-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><path d="M9 9h6v6H9z"/></svg></span><span class="metric-label">PROCESSOR</span></div>
+            <div class="metric-value"><b id="valCpu">—</b><span>%</span></div>
+            <div class="metric-detail" id="loadTxt">Load —</div>
+            <div class="metric-extrema"><span id="cpuPeak">Peak —</span><span id="cpuLow">Low —</span></div>
+            <canvas class="spark" id="sparkCpu" width="300" height="60" aria-label="CPU history"></canvas>
           </div>
-          <div class="kpi">
-            <div class="ring"><svg width="76" height="76"><circle class="bgc" cx="38" cy="38" r="32" fill="none" stroke-width="7"/><circle class="fgc" id="ringRam" cx="38" cy="38" r="32" fill="none" stroke-width="7" stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="201"/></svg><div class="val" id="valRam">–</div></div>
-            <div class="meta"><small>RAM</small><b id="ramTxt">—</b><canvas class="spark" id="sparkRam" width="300" height="60"></canvas><span class="avgpeak muted" id="ramAvg"></span></div>
+          <div class="kpi metric-card" title="Memory utilization">
+            <div class="metric-head"><span class="metric-icon ram-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 7V4m5 3V4m5 3V4M7 17v3m5-3v3m5-3v3M7 10h2v4H7zm5 0h2v4h-2zm5 0h1v4h-1z"/></svg></span><span class="metric-label">MEMORY</span></div>
+            <div class="metric-value"><b id="valRam">—</b><span>%</span></div>
+            <div class="metric-detail" id="ramTxt">—</div>
+            <div class="metric-extrema"><span id="ramPeak">Peak —</span><span id="ramLow">Low —</span></div>
+            <canvas class="spark" id="sparkRam" width="300" height="60" aria-label="Memory history"></canvas>
           </div>
-          <div class="kpi">
-            <div class="ring"><svg width="76" height="76"><circle class="bgc" cx="38" cy="38" r="32" fill="none" stroke-width="7"/><circle class="fgc" id="ringDisk" cx="38" cy="38" r="32" fill="none" stroke-width="7" stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="201"/></svg><div class="val" id="valDisk">–</div></div>
-            <div class="meta"><small>Disk</small><b id="diskTxt">—</b><span>storage used</span></div>
+          <div class="kpi metric-card" title="Disk storage utilization">
+            <div class="metric-head"><span class="metric-icon disk-icon"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6m4 4h.01"/></svg></span><span class="metric-label">STORAGE</span></div>
+            <div class="metric-value"><b id="valDisk">—</b><span>%</span></div>
+            <div class="metric-detail" id="diskTxt">—</div>
+            <div class="metric-extrema"><span id="diskPeak">Peak —</span><span id="diskLow">Low —</span></div>
+            <div class="metric-foot"><span class="metric-track"><i id="diskBar"></i></span><span id="diskFree">— free</span></div>
           </div>
-          <div class="kpi">
-            <div class="ring"><svg width="76" height="76"><circle class="bgc" cx="38" cy="38" r="32" fill="none" stroke-width="7"/><circle class="fgc" id="ringUsers" cx="38" cy="38" r="32" fill="none" stroke-width="7" stroke-linecap="round" stroke-dasharray="201" stroke-dashoffset="201"/></svg><div class="val" id="valUsers">–</div></div>
-            <div class="meta"><small>Users</small><b id="usersTxt">—</b><span id="trafficTxt">traffic —</span></div>
+          <div class="kpi metric-card" title="Active and total user accounts">
+            <div class="metric-head"><span class="metric-icon users-icon"><svg class="ic" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="metric-label">ACCOUNTS</span></div>
+            <div class="metric-value"><b id="valUsers">—</b><span id="usersTotalUnit">/ —</span></div>
+            <div class="metric-detail" id="usersTxt">— active</div>
+            <div class="metric-extrema"><span id="usersPeak">Peak —</span><span id="usersLow">Low —</span></div>
+            <div class="metric-detail" id="trafficTxt">—</div>
           </div>
         </div>
 
         <div class="grid2" style="margin-bottom:15px">
           <div class="card">
-            <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8 3 4"/></svg>Network speed<span class="right" id="speedNow">—</span></h3>
+            <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8 3 4"/></svg><span class="title-icon-only">Throughput</span><span class="right" id="speedNow">—</span></h3>
+            <div class="chart-toolbar"><div class="range-pills"><button type="button" class="range-btn" data-range-minutes="1">1m</button><button type="button" class="range-btn active" data-range-minutes="5">5m</button><button type="button" class="range-btn" data-range-minutes="15">15m</button><button type="button" class="range-btn" data-range-minutes="60">1h</button></div><span class="chart-live"><i></i> LIVE</span></div>
             <div style="position:relative">
               <canvas id="netChart"></canvas>
               <div id="chartTip" style="position:absolute;display:none;pointer-events:none;background:#0d1522;border:1px solid var(--line2);border-radius:10px;padding:8px 11px;font-size:12px;box-shadow:var(--shadow);white-space:nowrap;z-index:5"></div>
@@ -3197,8 +3279,14 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
             <div class="legend">
               <span><i style="background:#2ee6a8"></i>Download</span>
               <span><i style="background:#2f7bff"></i>Upload</span>
-              <span style="margin-left:auto" id="netTotals">—</span>
+              <span id="netPeak">Peak —</span><span id="netLow">Low —</span><span style="margin-left:auto" id="netTotals">—</span>
             </div>
+          </div>
+          <div class="card">
+            <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8 3 4"/></svg>Resource history<span class="right">CPU / RAM</span></h3>
+            <div class="resource-legend"><span><i class="cpu-dot"></i>CPU</span><span><i class="ram-dot"></i>RAM</span><span class="chart-live"><i></i> LIVE</span></div>
+            <canvas id="resourceChart" class="history-chart" aria-label="CPU and RAM history chart"></canvas>
+            <div class="resource-stats"><span id="resourceCpuRange">CPU Peak — · Low —</span><span id="resourceRamRange">RAM Peak — · Low —</span></div>
           </div>
           <div class="card">
             <h3><svg class="ic sm" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System info</h3>
@@ -3648,7 +3736,30 @@ async function loadOnline(){
 
 /* ---------- dashboard ---------- */
 let SETTINGS_FILLED = false;
-let LAST_NET = null, SAMPLES = [];
+let LAST_NET = null, SAMPLES = [], RESOURCE_SAMPLES = [], activeWindowMinutes = 5;
+let diskSamples = [], userSamples = [];
+const MAX_TELEMETRY_SAMPLES = 1800;
+function visibleSamples(arr){
+  const cutoff = Date.now() - activeWindowMinutes*60*1000;
+  return arr.filter(p => p.t >= cutoff);
+}
+function extrema(arr, key){
+  const vals = arr.map(p => Number(p[key])).filter(Number.isFinite);
+  return vals.length ? {peak:Math.max(...vals), low:Math.min(...vals)} : null;
+}
+function setExtrema(peakId, lowId, arr, key, suffix="%"){
+  const x = extrema(arr,key);
+  const peak=$("#"+peakId), low=$("#"+lowId);
+  if(!x) return;
+  if(peak) peak.textContent="Peak "+x.peak.toFixed(1)+suffix;
+  if(low) low.textContent="Low "+x.low.toFixed(1)+suffix;
+}
+function setMetricValue(id, value, decimals=1){
+  const el=$("#"+id); if(el) el.textContent=Number(value).toFixed(decimals);
+}
+function setRangeButtons(){
+  $(".range-btn").forEach(b=>b.classList.toggle("active",Number(b.dataset.rangeMinutes)===activeWindowMinutes));
+}
 function tweenVal(el, to, suffix){
   const from = el._v || 0; el._v = to;
   const t0 = performance.now();
@@ -3661,16 +3772,16 @@ function tweenVal(el, to, suffix){
 }
 const cpuHist = [], ramHist = [];
 function pushSpark(arr, v){ arr.push(v); if(arr.length > 40) arr.shift(); }
-function drawSpark(id, arr, color){
+function drawSpark(id, arr, color, max=100){
   const cv = document.getElementById(id); if(!cv || arr.length < 2) return;
-  const ctx = cv.getContext("2d"), W = cv.width, H = cv.height;
-  ctx.clearRect(0, 0, W, H);
-  const pts = arr.map((v, i) => [i/(arr.length - 1)*(W - 4) + 2, H - 3 - (v/100)*(H - 8)]);
-  ctx.beginPath();
-  pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
-  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
-  ctx.lineTo(pts[pts.length - 1][0], H); ctx.lineTo(pts[0][0], H); ctx.closePath();
-  ctx.fillStyle = color + "2e"; ctx.fill();
+  const ctx=cv.getContext("2d"), W=cv.width, H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  const pts=arr.map((v,i)=>[i/(arr.length-1)*(W-4)+2,H-3-(Math.max(0,Math.min(max,v))/max)*(H-8)]);
+  ctx.beginPath(); pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.strokeStyle=color;ctx.lineWidth=3;ctx.lineJoin="round";ctx.lineCap="round";ctx.stroke();
+  ctx.lineTo(pts[pts.length-1][0],H);ctx.lineTo(pts[0][0],H);ctx.closePath();
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,color+"38");g.addColorStop(1,color+"00");
+  ctx.fillStyle=g;ctx.fill();
 }
 function avgPeak(id, arr){
   const el = document.getElementById(id); if(!el || !arr.length) return;
@@ -3707,21 +3818,40 @@ async function loadDashboard(){
   try{ d = await api("/api/dashboard"); }catch(e){ return; }
   $("#page-dashboard").classList.remove("loading");
   const s = d.stats || {};
-  const cpu = Number(s.cpu||0);
-  setRing("ringCpu", "valCpu", cpu, cpu.toFixed(0)+"%");
-  $("#loadTxt").textContent = "load " + (s.load || "—");
-  pushSpark(cpuHist, cpu); drawSpark("sparkCpu", cpuHist, "#3b8bff"); avgPeak("cpuAvg", cpuHist);
-  const ramPct = s.ram_total ? 100*(s.ram_used||0)/s.ram_total : 0;
-  setRing("ringRam", "valRam", ramPct, ramPct.toFixed(0)+"%");
-  pushSpark(ramHist, ramPct); drawSpark("sparkRam", ramHist, "#9a7bff"); avgPeak("ramAvg", ramHist);
-  $("#ramTxt").textContent = fmtBytes(s.ram_used) + " / " + fmtBytes(s.ram_total);
-  const diskPct = s.disk_total ? 100*(s.disk_used||0)/s.disk_total : 0;
-  setRing("ringDisk", "valDisk", diskPct, diskPct.toFixed(0)+"%");
-  $("#diskTxt").textContent = fmtBytes(s.disk_used) + " / " + fmtBytes(s.disk_total);
-  const uPct = d.users_total ? 100*(d.users_active||0)/d.users_total : 0;
-  setRing("ringUsers", "valUsers", uPct, String(d.users_active||0));
-  $("#usersTxt").textContent = (d.users_active||0) + " of " + (d.users_total||0) + " users";
-  $("#trafficTxt").textContent = "traffic " + fmtBytes(d.traffic_total);
+  const nowTs = Date.now();
+  const cpu = Math.max(0,Math.min(100,Number(s.cpu||0)));
+  const ramPct = s.ram_total ? Math.max(0,Math.min(100,100*(s.ram_used||0)/s.ram_total)) : 0;
+  const diskPct = s.disk_total ? Math.max(0,Math.min(100,100*(s.disk_used||0)/s.disk_total)) : 0;
+  const activeUsers = Number(d.users_active||0), totalUsers = Number(d.users_total||0);
+  $("#valCpu").textContent=cpu.toFixed(1);
+  $("#valRam").textContent=ramPct.toFixed(1);
+  $("#valDisk").textContent=diskPct.toFixed(1);
+  $("#valUsers").textContent=String(activeUsers);
+  $("#usersTotalUnit").textContent="/ "+totalUsers;
+  $("#loadTxt").textContent="Load "+(s.load||"—");
+  $("#ramTxt").textContent=fmtBytes(s.ram_used)+" / "+fmtBytes(s.ram_total);
+  $("#diskTxt").textContent=fmtBytes(s.disk_used)+" / "+fmtBytes(s.disk_total);
+  $("#usersTxt").textContent=activeUsers+" active";
+  $("#trafficTxt").textContent=fmtBytes(d.traffic_total)+" total traffic";
+  $("#diskBar").style.width=diskPct+"%";
+  $("#diskFree").textContent=fmtBytes(Math.max(0,(s.disk_total||0)-(s.disk_used||0)))+" free";
+  RESOURCE_SAMPLES.push({t:nowTs,cpu,ram:ramPct});
+  diskSamples.push({t:nowTs,v:diskPct});
+  userSamples.push({t:nowTs,v:activeUsers});
+  if(RESOURCE_SAMPLES.length>MAX_TELEMETRY_SAMPLES) RESOURCE_SAMPLES.shift();
+  if(diskSamples.length>MAX_TELEMETRY_SAMPLES) diskSamples.shift();
+  if(userSamples.length>MAX_TELEMETRY_SAMPLES) userSamples.shift();
+  const visibleResources=visibleSamples(RESOURCE_SAMPLES);
+  setExtrema("cpuPeak","cpuLow",visibleResources,"cpu");
+  setExtrema("ramPeak","ramLow",visibleResources,"ram");
+  setExtrema("diskPeak","diskLow",visibleSamples(diskSamples),"v");
+  const userExt=extrema(visibleSamples(userSamples),"v");
+  if(userExt){$("#usersPeak").textContent="Peak "+userExt.peak;$("#usersLow").textContent="Low "+userExt.low;}
+  drawSpark("sparkCpu",visibleResources.map(x=>x.cpu),"#3b8bff",100);
+  drawSpark("sparkRam",visibleResources.map(x=>x.ram),"#9a7bff",100);
+  drawResourceChart();
+  $("#resourceCpuRange").textContent="CPU Peak "+(extrema(visibleResources,"cpu")?.peak.toFixed(1)??"—")+"% · Low "+(extrema(visibleResources,"cpu")?.low.toFixed(1)??"—")+"%";
+  $("#resourceRamRange").textContent="RAM Peak "+(extrema(visibleResources,"ram")?.peak.toFixed(1)??"—")+"% · Low "+(extrema(visibleResources,"ram")?.low.toFixed(1)??"—")+"%";
   $("#dashSub").textContent = "Host " + (s.host||"—") + " · uptime " + (s.uptime||"—");
   $("#sideHost").textContent = s.host || "—";
   $("#sysInfo").innerHTML = [
@@ -3755,14 +3885,15 @@ async function loadDashboard(){
     if(dt > 0.5){
       SAMPLES.push({t: Date.now(), rx: Math.max(0,(s.net_rx-LAST_NET.rx)/dt),
                     tx: Math.max(0,(s.net_tx-LAST_NET.tx)/dt)});
-      if(SAMPLES.length > 160) SAMPLES.shift();
+      if(SAMPLES.length > MAX_TELEMETRY_SAMPLES) SAMPLES.shift();
       drawChart();
       const last = SAMPLES[SAMPLES.length-1];
       $("#speedNow").textContent = "↓ " + fmtSpeed(last.rx) + " · ↑ " + fmtSpeed(last.tx);
     }
   }
   LAST_NET = {rx: s.net_rx||0, tx: s.net_tx||0, t: now};
-  $("#netTotals").textContent = "Session ↓ " + fmtBytes(s.net_rx) + " · ↑ " + fmtBytes(s.net_tx);
+  $("#netTotals").textContent = "↓ "+fmtBytes(s.net_rx)+" · ↑ "+fmtBytes(s.net_tx);
+  setRangeButtons();
   if(!SETTINGS_FILLED && d.settings){
     SETTINGS_FILLED = true;
     $$("#settingsForm input[name]").forEach(inp => {
@@ -3771,154 +3902,93 @@ async function loadDashboard(){
   }
 }
 let HOVER_IDX = -1;
-function chartGeom(){
-  const cv = $("#netChart");
-  const w = cv.clientWidth, h = cv.clientHeight;
-  return {w, h, L: 52, R: 8, T: 8, B: 20,
-          iw: w - 52 - 8, ih: h - 8 - 20};
+function canvasSetup(cv){
+  const w=cv.clientWidth||320,h=cv.clientHeight||170,dpr=window.devicePixelRatio||1;
+  if(cv.width!==Math.round(w*dpr)||cv.height!==Math.round(h*dpr)){cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);}
+  const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+  return {ctx,w,h};
+}
+function chartGrid(ctx,w,h,max,labelFmt){
+  const L=48,R=8,T=10,B=22,iw=w-L-R,ih=h-T-B;
+  ctx.font="10px system-ui";ctx.fillStyle="#718198";ctx.strokeStyle="rgba(36,49,69,.62)";ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){const y=T+ih*i/4;ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(L+iw,y);ctx.stroke();ctx.fillText(labelFmt(max*(1-i/4)),2,y+3);}
+  return {L,R,T,B,iw,ih};
 }
 function drawChart(){
-  const cv = $("#netChart"); if(!cv) return;
-  const dpr = window.devicePixelRatio || 1;
-  const {w, h, L, T, iw, ih} = chartGeom();
-  if(cv.width !== Math.round(w*dpr)){ cv.width = w*dpr; cv.height = h*dpr; }
-  const ctx = cv.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  ctx.font = "10.5px system-ui"; ctx.fillStyle = "#5f7089";
-  if(SAMPLES.length < 2){
-    ctx.fillText("Collecting traffic data…", L + 6, T + 16);
-    return;
-  }
-  let max = Math.max(1024, ...SAMPLES.map(p => Math.max(p.rx, p.tx)));
-  max *= 1.15;
-  const X = i => L + iw * (SAMPLES.length < 2 ? 0 : i/(159)) + (iw - iw*(SAMPLES.length-1)/159);
-  const Xp = i => L + (iw * i / 159) + (iw - iw * Math.min(SAMPLES.length-1,159) / 159);
-  const Y = v => T + ih - (v/max)*ih;
-  /* grid + y labels */
-  ctx.strokeStyle = "rgba(36,49,69,.55)"; ctx.lineWidth = 1;
-  for(let g = 0; g <= 4; g++){
-    const y = T + ih*g/4;
-    ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(L+iw, y); ctx.stroke();
-    ctx.fillText(fmtSpeed(max*(1-g/4)), 2, y + 3);
-  }
-  /* x time labels */
-  const tfmt = t => new Date(t).toTimeString().slice(0,8);
-  ctx.fillText(tfmt(SAMPLES[0].t), L, h - 5);
-  const midT = tfmt(SAMPLES[Math.floor(SAMPLES.length/2)].t);
-  ctx.fillText(midT, L + iw/2 - 18, h - 5);
-  const lastT = tfmt(SAMPLES[SAMPLES.length-1].t);
-  ctx.fillText(lastT, L + iw - 42, h - 5);
-  const smooth = key => {
-    const pts = SAMPLES.map((p,i) => [Xp(i), Y(p[key])]);
-    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
-    for(let i = 0; i < pts.length-1; i++){
-      const xc = (pts[i][0]+pts[i+1][0])/2, yc = (pts[i][1]+pts[i+1][1])/2;
-      ctx.quadraticCurveTo(pts[i][0], pts[i][1], xc, yc);
-    }
-    ctx.lineTo(pts[pts.length-1][0], pts[pts.length-1][1]);
+  const cv=$("#netChart");if(!cv)return;
+  const {ctx,w,h}=canvasSetup(cv),data=visibleSamples(SAMPLES);
+  if(data.length<2){ctx.fillStyle="#718198";ctx.font="12px system-ui";ctx.fillText("Collecting live throughput…",54,28);return;}
+  const peak=Math.max(1024,...data.map(p=>Math.max(p.rx,p.tx))),max=peak*1.18;
+  const g=chartGrid(ctx,w,h,max,v=>fmtSpeed(v));
+  const X=i=>g.L+g.iw*i/(data.length-1),Y=v=>g.T+g.ih-(v/max)*g.ih;
+  const drawLine=(key,color,fill)=>{
+    const pts=data.map((p,i)=>[X(i),Y(p[key])]);
+    ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+    ctx.lineWidth=2.3;ctx.strokeStyle=color;ctx.lineJoin="round";ctx.lineCap="round";ctx.stroke();
+    ctx.lineTo(pts[pts.length-1][0],g.T+g.ih);ctx.lineTo(pts[0][0],g.T+g.ih);ctx.closePath();
+    const grad=ctx.createLinearGradient(0,g.T,0,g.T+g.ih);grad.addColorStop(0,fill);grad.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=grad;ctx.fill();
     return pts;
   };
-  const area = (key, color, grad) => {
-    const pts = smooth(key);
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
-    const last = pts[pts.length-1], first = pts[0];
-    ctx.lineTo(last[0], T+ih); ctx.lineTo(first[0], T+ih); ctx.closePath();
-    const g = ctx.createLinearGradient(0, T, 0, T+ih);
-    g.addColorStop(0, grad); g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g; ctx.fill();
-    return pts;
-  };
-  const ptsRx = area("rx", "#00c2a8", "rgba(0,194,168,.22)");
-  const ptsTx = area("tx", "#2f7bff", "rgba(47,123,255,.16)");
-  if(HOVER_IDX >= 0 && HOVER_IDX < SAMPLES.length){
-    const i = HOVER_IDX, x = ptsRx[i][0];
-    ctx.strokeStyle = "rgba(233,239,247,.35)";
-    ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, T+ih); ctx.stroke();
-    [[ptsRx, "#2ee6a8"], [ptsTx, "#2f7bff"]].forEach(([pts, c]) => {
-      ctx.beginPath(); ctx.arc(x, pts[i][1], 4, 0, Math.PI*2);
-      ctx.fillStyle = c; ctx.fill();
-      ctx.strokeStyle = "#0b0f16"; ctx.lineWidth = 1.5; ctx.stroke();
-    });
+  const rxPts=drawLine("rx","#2ee6a8","rgba(46,230,168,.18)");
+  const txPts=drawLine("tx","#4c91ff","rgba(76,145,255,.16)");
+  if(HOVER_IDX>=0&&HOVER_IDX<data.length){
+    const x=rxPts[HOVER_IDX][0];ctx.strokeStyle="rgba(233,239,247,.35)";
+    ctx.beginPath();ctx.moveTo(x,g.T);ctx.lineTo(x,g.T+g.ih);ctx.stroke();
+    [[rxPts,"#2ee6a8"],[txPts,"#4c91ff"]].forEach(([pts,c])=>{ctx.beginPath();ctx.arc(x,pts[HOVER_IDX][1],4,0,Math.PI*2);ctx.fillStyle=c;ctx.fill();});
   }
+  const fmt=t=>new Date(t).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  ctx.fillStyle="#718198";ctx.font="10px system-ui";
+  ctx.fillText(fmt(data[0].t),g.L,h-5);ctx.fillText(fmt(data[data.length-1].t),Math.max(g.L+g.iw-55,g.L),h-5);
+  const rx=extrema(data,"rx"),tx=extrema(data,"tx");
+  const peakNet=Math.max(rx?.peak||0,tx?.peak||0),lowNet=Math.min(rx?.low||0,tx?.low||0);
+  $("#netPeak").textContent="Peak "+fmtSpeed(peakNet);
+  $("#netLow").textContent="Low "+fmtSpeed(lowNet);
 }
-document.addEventListener("DOMContentLoaded", () => {
-  const cv = $("#netChart"); if(!cv) return;
-  const tip = $("#chartTip");
-  cv.addEventListener("mousemove", e => {
-    if(SAMPLES.length < 2) return;
-    const rect = cv.getBoundingClientRect();
-    const {L, iw} = chartGeom();
-    const rel = (e.clientX - rect.left - L) / iw;
-    const idx = Math.round(rel * 159 - (159 - (SAMPLES.length-1)));
-    HOVER_IDX = Math.max(0, Math.min(SAMPLES.length-1, idx));
-    const p = SAMPLES[HOVER_IDX];
-    tip.style.display = "block";
-    tip.innerHTML = `<div class="muted" style="margin-bottom:3px">${new Date(p.t).toTimeString().slice(0,8)}</div>`
-      + `<div><span style="color:#00c2a8">●</span> Download <b>${fmtSpeed(p.rx)}</b></div>`
-      + `<div><span style="color:#00a3d9">●</span> Upload <b>${fmtSpeed(p.tx)}</b></div>`;
-    const x = L + iw * HOVER_IDX / 159 + (iw - iw*(SAMPLES.length-1)/159);
-    tip.style.left = Math.min(rect.width - 150, Math.max(0, x + 12)) + "px";
-    tip.style.top = "6px";
-    drawChart();
+function drawResourceChart(){
+  const cv=$("#resourceChart");if(!cv)return;
+  const {ctx,w,h}=canvasSetup(cv),data=visibleSamples(RESOURCE_SAMPLES);
+  if(data.length<2){ctx.fillStyle="#718198";ctx.font="12px system-ui";ctx.fillText("Collecting resource history…",54,28);return;}
+  const g=chartGrid(ctx,w,h,100,v=>v.toFixed(0)+"%");
+  const X=i=>g.L+g.iw*i/(data.length-1),Y=v=>g.T+g.ih-(v/100)*g.ih;
+  [["cpu","#3b8bff","rgba(59,139,255,.13)"],["ram","#a58aff","rgba(165,138,255,.12)"]].forEach(([key,color,fill])=>{
+    const pts=data.map((p,i)=>[X(i),Y(p[key])]);
+    ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+    ctx.strokeStyle=color;ctx.lineWidth=2.2;ctx.lineJoin="round";ctx.stroke();
+    ctx.lineTo(pts[pts.length-1][0],g.T+g.ih);ctx.lineTo(pts[0][0],g.T+g.ih);ctx.closePath();
+    const grad=ctx.createLinearGradient(0,g.T,0,g.T+g.ih);grad.addColorStop(0,fill);grad.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=grad;ctx.fill();
   });
-  cv.addEventListener("mouseleave", () => { HOVER_IDX = -1; tip.style.display = "none"; drawChart(); });
-});
-
-/* ---------- packages ---------- */
-let PACKAGES = [];
-async function loadPackages(){
-  try{
-    const d = await api("/api/packages");
-    PACKAGES = d.packages || [];
-    $("#packageRows").innerHTML = PACKAGES.map(p => {
-      const assigned = USERS.filter(u => u.package_id === p.id).length;
-      return '<tr><td><b>'+esc(p.name)+'</b></td>'
-        +'<td>'+p.protocols.map(x=>'<span class="pill proto">'+esc(x)+'</span>').join(" ")+'</td>'
-        +'<td>'+esc(p.quota_gb ? p.quota_gb+" GB" : "Unlimited")+'</td>'
-        +'<td>'+esc(p.validity_days ? p.validity_days+" days" : "Unlimited")+'</td>'
-        +'<td>'+esc(p.ip_limit ? p.ip_limit : "Unlimited")+'</td>'
-        +'<td>'+assigned+'</td><td><div class="rowacts"><button class="btn ghost small" onclick="editPackage('+p.id+')">Edit</button>'
-        +'<button class="btn danger small" onclick="deletePackage('+p.id+')">Delete</button></div></td></tr>';
-    }).join("") || '<tr><td colspan="7" class="muted">No packages created.</td></tr>';
-    $("#ufPackage").innerHTML = '<option value="">Custom limits</option>' +
-      PACKAGES.filter(p=>p.enabled).map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join("");
-  }catch(e){ toast(e.message); }
+  const fmt=t=>new Date(t).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+  ctx.fillStyle="#718198";ctx.font="10px system-ui";
+  ctx.fillText(fmt(data[0].t),g.L,h-5);ctx.fillText(fmt(data[data.length-1].t),Math.max(g.L+g.iw-45,g.L),h-5);
 }
-$("#packageForm").addEventListener("submit", async e => {
-  e.preventDefault();
-  const protocols = $(".pkProto").filter(x=>x.checked).map(x=>x.value);
-  if(!protocols.length){ toast("Select at least one protocol."); return; }
-  try{
-    const id = $("#pkId").value;
-    await api(id ? "/api/packages/"+id : "/api/packages", {method:"POST", body:JSON.stringify({
-      name:$("#pkName").value.trim(), quota_gb:Number($("#pkQuota").value||0),
-      validity_days:Number($("#pkDays").value||0), ip_limit:Number($("#pkIp").value||0),
-      protocols
-    })});
-    $("#packageForm").reset(); $("#pkId").value = "";
-    $("#packageFormTitle").textContent = "Create service package";
-    toast(id ? "Package updated." : "Package created."); loadPackages();
-  }catch(err){ toast(err.message); }
+function updateRangeWindow(minutes){
+  activeWindowMinutes=Number(minutes)||5;
+  HOVER_IDX=-1;$("#chartTip").style.display="none";
+  setRangeButtons();drawChart();drawResourceChart();
+}
+document.addEventListener("DOMContentLoaded",()=>{
+  $$(".range-btn").forEach(b=>b.addEventListener("click",()=>updateRangeWindow(b.dataset.rangeMinutes)));
+  const cv=$("#netChart"),tip=$("#chartTip");if(!cv)return;
+  const move=e=>{
+    const data=visibleSamples(SAMPLES);if(data.length<2)return;
+    const rect=cv.getBoundingClientRect(),w=rect.width;
+    const ratio=Math.max(0,Math.min(1,(e.clientX-rect.left-48)/(w-56)));
+    HOVER_IDX=Math.round(ratio*(data.length-1));const p=data[HOVER_IDX];
+    tip.style.display="block";
+    tip.innerHTML='<div class="muted" style="margin-bottom:3px">'+new Date(p.t).toLocaleTimeString()+'</div>'
+      +'<div><span style="color:#2ee6a8">●</span> ↓ '+fmtSpeed(p.rx)+'</div>'
+      +'<div><span style="color:#4c91ff">●</span> ↑ '+fmtSpeed(p.tx)+'</div>';
+    tip.style.left=Math.max(0,Math.min(w-150,48+ratio*(w-56)+10))+"px";tip.style.top="6px";
+    drawChart();
+  };
+  cv.addEventListener("mousemove",move);
+  cv.addEventListener("touchstart",e=>{if(e.touches[0])move(e.touches[0]);},{passive:true});
+  cv.addEventListener("touchmove",e=>{if(e.touches[0])move(e.touches[0]);},{passive:true});
+  cv.addEventListener("mouseleave",()=>{HOVER_IDX=-1;tip.style.display="none";drawChart();});
+  window.addEventListener("resize",()=>{drawChart();drawResourceChart();});
 });
-window.editPackage = id => {
-  const p = PACKAGES.find(x=>x.id===id); if(!p) return;
-  $("#pkId").value = p.id; $("#pkName").value = p.name;
-  $("#pkQuota").value = p.quota_gb || 0;
-  $("#pkDays").value = p.validity_days || 0;
-  $("#pkIp").value = p.ip_limit || 0;
-  $(".pkProto").forEach(x=>x.checked=p.protocols.includes(x.value));
-  $("#packageFormTitle").textContent = "Edit package — " + p.name;
-  gotoPage("packages");
-  window.scrollTo({top:0,behavior:"smooth"});
-};
-window.deletePackage = async id => {
-  const p = PACKAGES.find(x=>x.id===id);
-  if(!confirm("Delete package "+(p?p.name:id)+"? Assigned packages cannot be deleted.")) return;
-  try{ await api("/api/packages/"+id,{method:"DELETE"}); toast("Package deleted."); loadPackages(); }
-  catch(err){ toast(err.message); }
-};
-
 /* ---------- users ---------- */
 let USERS = [];
 function daysLeft(exp){

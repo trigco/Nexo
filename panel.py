@@ -1285,12 +1285,21 @@ def user_on_inbound(row, inbound):
 
 def clean_inbound_ids(data):
     ids = data.get("inbound_ids")
-    if not isinstance(ids, list):
+    if ids is None:
         return ""
+    if not isinstance(ids, list):
+        raise ValueError("inbound_ids must be an array of inbound IDs.")
     valid = {ib["id"] for ib in list_inbounds()}
-    keep = sorted({int(i) for i in ids
-                   if str(i).isdigit() and int(i) in valid})
-    return json.dumps(keep) if keep else ""
+    keep = set()
+    for item in ids:
+        if isinstance(item, bool) or not str(item).isdigit():
+            raise ValueError("Inbound IDs must be positive integers.")
+        inbound_id = int(item)
+        if inbound_id not in valid:
+            raise ValueError(f"Inbound {inbound_id} does not exist.")
+        keep.add(inbound_id)
+    # Empty array intentionally means all matching inbounds (legacy contract).
+    return json.dumps(sorted(keep)) if keep else ""
 
 
 def check_inbound_capacity(protocols, exclude_user_id=None, inbound_ids=""):
@@ -1328,17 +1337,37 @@ def create_user(data):
                          "and use lowercase letters, digits, - or _.")
     if username in ("root", "admin", "ubuntu"):
         raise ValueError("That username is reserved.")
-    protocols = [p for p in data.get("protocols", ["ssh"])
-                 if p in ("ssh", "vless", "vmess", "trojan", "shadowsocks",
-                          "ovpn", "dnstt")]
-    if not protocols:
+    requested_protocols = data.get("protocols", ["ssh"])
+    allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn", "dnstt"}
+    if not isinstance(requested_protocols, list) or not requested_protocols:
         raise ValueError("Pick at least one protocol.")
+    if any(p not in allowed_protocols for p in requested_protocols):
+        raise ValueError("One or more selected protocols are unsupported.")
+    protocols = list(dict.fromkeys(requested_protocols))
     inbound_ids = clean_inbound_ids(data)
     check_inbound_capacity(protocols, inbound_ids=inbound_ids)
-    password = data.get("password") or secrets.token_urlsafe(6)
-    days = int(data.get("days") or 30)
+    password = data.get("password") or secrets.token_urlsafe(12)
+    if not isinstance(password, str) or not (8 <= len(password) <= 128) or any(
+            ch in password for ch in ("\\n", "\\r", "\\x00")):
+        raise ValueError("Credential must be 8-128 characters and contain no line breaks.")
+    try:
+        days = int(data.get("days") if data.get("days") is not None else 30)
+        quota_gb = float(data.get("quota_gb") or 0)
+        ip_limit = int(data.get("ip_limit") or 0)
+        hwid_limit = int(data.get("hwid_limit") or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Days, quota and limits must be valid numbers.")
+    if not 0 <= days <= 3650:
+        raise ValueError("Validity must be between 0 and 3650 days.")
+    if not 0 <= quota_gb <= 1000000:
+        raise ValueError("Quota must be between 0 and 1,000,000 GB.")
+    if not 0 <= ip_limit <= 10000 or not 0 <= hwid_limit <= 10000:
+        raise ValueError("IP and device limits must be between 0 and 10,000.")
+    note = str(data.get("note", ""))
+    if len(note) > 2000:
+        raise ValueError("Note cannot exceed 2,000 characters.")
     expire = (today() + timedelta(days=days)).isoformat() if days > 0 else ""
-    quota = int(round(float(data.get("quota_gb") or 0) * GB))
+    quota = int(round(quota_gb * GB))
     conn = db()
     if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         conn.close()
@@ -1349,8 +1378,7 @@ def create_user(data):
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (username, password, ",".join(protocols), str(uuidlib.uuid4()),
          quota, expire, datetime.now().isoformat(timespec="seconds"),
-         data.get("note", ""), int(data.get("ip_limit") or 0),
-         int(data.get("hwid_limit") or 0), inbound_ids),
+         note, ip_limit, hwid_limit, inbound_ids),
     )
     user_id = cursor.lastrowid
     conn.commit()
@@ -2117,6 +2145,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if not self.require_auth():
+                return
+            if not self.require_csrf():
                 return
             match = re.fullmatch(r"/api/users/(\d+)", path)
             if match:

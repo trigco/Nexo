@@ -333,6 +333,22 @@ class PersistenceAndSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Protocol removal"):
             panel.update_user(created["id"], {"protocols": ["vless"]})
 
+    def test_settings_validation_rejects_invalid_ports_hosts_and_paths(self):
+        valid = panel.validate_settings({
+            "panel_port": 8443, "server_host": "vpn.example.com",
+            "xray_path": "/edge/ws", "telegram": "https://t.me/nexo_channel",
+        })
+        self.assertEqual(valid["panel_port"], "8443")
+        self.assertEqual(valid["server_host"], "vpn.example.com")
+        with self.assertRaises(ValueError):
+            panel.validate_settings({"panel_port": 70000})
+        with self.assertRaises(ValueError):
+            panel.validate_settings({"server_host": "good.example;touch /tmp/pwn"})
+        with self.assertRaises(ValueError):
+            panel.validate_settings({"xray_path": "/ok\\r\\nInjected: yes"})
+        with self.assertRaises(ValueError):
+            panel.validate_settings({"unknown": "value"})
+
     def test_user_input_rejects_unknown_protocol_and_negative_quota(self):
         with self.assertRaises(ValueError):
             panel.create_user({"username": "badproto", "protocols": ["ssh", "madeup"]})

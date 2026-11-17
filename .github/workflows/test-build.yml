@@ -1,0 +1,52 @@
+name: Nexo Web Panel Test Build
+
+on:
+  push:
+    branches: ["test/web-panel-release"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate installer syntax
+        run: bash -n install.sh
+
+      - name: Compile panel and proxy
+        run: python -m py_compile panel.py wsproxy.py
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build test bundle
+        run: |
+          set -euo pipefail
+          mkdir -p dist/nexo-web-panel-test
+          install -m 0644 panel.py dist/nexo-web-panel-test/panel.py
+          install -m 0644 wsproxy.py dist/nexo-web-panel-test/wsproxy.py
+          install -m 0644 install.sh dist/nexo-web-panel-test/install.sh
+          install -m 0644 README.md dist/nexo-web-panel-test/README.md
+          cp -a docs dist/nexo-web-panel-test/docs
+          printf 'Repository: %s\nBranch: %s\nCommit: %s\nBuild: test-only\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA" \
+            > dist/nexo-web-panel-test/BUILD-INFO.txt
+          tar -czf dist/nexo-web-panel-test.tar.gz -C dist nexo-web-panel-test
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexo-web-panel-test
+          path: dist/nexo-web-panel-test.tar.gz
+          if-no-files-found: error
+          retention-days: 14

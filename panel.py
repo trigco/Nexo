@@ -3308,18 +3308,18 @@ tbody tr:hover{background:rgba(255,255,255,.022)}
           <h3><svg class="ic sm" viewBox="0 0 24 24"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>Server &amp; client settings</h3>
           <div class="fgrid">
             <div class="field"><label>Public host / IP (shown to clients)</label><input name="server_host"></div>
-            <div class="field"><label>Panel port</label><input name="panel_port"></div>
-            <div class="field"><label>SSH port</label><input name="ssh_port"></div>
-            <div class="field"><label>WebSocket port</label><input name="ws_port"></div>
-            <div class="field"><label>Stunnel (WSS) port</label><input name="wss_port"></div>
-            <div class="field"><label>Xray VLESS port</label><input name="xray_port"></div>
-            <div class="field"><label>Xray VMess port</label><input name="xray_vmess_port"></div>
+            <div class="field"><label>Panel port (restart required)</label><input name="panel_port"><div class="muted" style="font-size:11px;margin-top:4px">Saved now; takes effect after restarting Nexo.</div></div>
+            <div class="field"><label>SSH port (managed by sshd)</label><input name="ssh_port" disabled></div>
+            <div class="field"><label>WebSocket port (managed by service)</label><input name="ws_port" disabled></div>
+            <div class="field"><label>Stunnel (WSS) port</label><input name="wss_port" disabled></div>
+            <div class="field"><label>Xray VLESS port</label><input name="xray_port" disabled></div>
+            <div class="field"><label>Xray VMess port</label><input name="xray_vmess_port" disabled></div>
             <div class="field"><label>Xray WS path</label><input name="xray_path"></div>
             <div class="field"><label>Cloudflare WS host</label><input name="cf_ws_host"></div>
             <div class="field"><label>Default SNI host (bug host)</label><input name="sni_host"></div>
-            <div class="field"><label>OpenVPN port</label><input name="ovpn_port"></div>
+            <div class="field"><label>OpenVPN port</label><input name="ovpn_port" disabled></div>
             <div class="field"><label>DNSTT domain (NS delegated)</label><input name="dnstt_domain"></div>
-            <div class="field"><label>DNSTT port</label><input name="dnstt_port"></div>
+            <div class="field"><label>DNSTT port</label><input name="dnstt_port" disabled></div>
             <div class="field"><label>Brand</label><input name="brand"></div>
             <div class="field full"><label>Telegram link</label><input name="telegram"></div>
           </div>

@@ -1627,6 +1627,30 @@ def create_user(data):
                          "and use lowercase letters, digits, - or _.")
     if username in ("root", "admin", "ubuntu"):
         raise ValueError("That username is reserved.")
+    data = dict(data)
+    package_id = None
+    package_data = {}
+    if data.get("package_id") not in (None, ""):
+        try:
+            package_id = int(data["package_id"])
+        except (TypeError, ValueError):
+            raise ValueError("Invalid package selection.")
+        conn = db()
+        package_row = conn.execute(
+            "SELECT * FROM packages WHERE id=? AND enabled=1", (package_id,)
+        ).fetchone()
+        conn.close()
+        if not package_row:
+            raise ValueError("Selected package does not exist or is disabled.")
+        package_data = package_snapshot(package_row)
+        data.update({
+            "protocols": package_data["protocols"],
+            "quota_gb": package_data["quota_bytes"] / GB if package_data["quota_bytes"] else 0,
+            "days": package_data["validity_days"],
+            "ip_limit": package_data["ip_limit"],
+            "hwid_limit": 0,
+            "inbound_ids": package_data["inbound_ids"],
+        })
     requested_protocols = data.get("protocols", ["ssh"])
     allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
     if not isinstance(requested_protocols, list) or not requested_protocols:
@@ -1666,12 +1690,14 @@ def create_user(data):
         raise ValueError("A user with that name already exists in the panel.")
     cursor = conn.execute(
         "INSERT INTO users (username, password, protocols, uuid, quota_bytes, "
-        "expire_date, created_at, note, ip_limit, hwid_limit, inbound_ids) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "expire_date, created_at, note, ip_limit, hwid_limit, inbound_ids, "
+        "package_id, package_snapshot_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (username, password if ({"trojan", "shadowsocks"} & set(protocols)) else "",
          ",".join(protocols), str(uuidlib.uuid4()),
          quota, expire, datetime.now().isoformat(timespec="seconds"),
-         note, ip_limit, hwid_limit, inbound_ids),
+         note, ip_limit, hwid_limit, inbound_ids, package_id,
+         json.dumps(package_data) if package_data else "{}"),
     )
     user_id = cursor.lastrowid
     conn.commit()

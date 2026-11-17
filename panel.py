@@ -1469,6 +1469,154 @@ def check_inbound_capacity(protocols, exclude_user_id=None, inbound_ids=""):
                 f"({count}/{max_clients} clients). Raise its client limit first.")
 
 
+def package_public(row):
+    item = dict(row)
+    item["protocols"] = json.loads(item.pop("protocols_json") or '["ssh"]')
+    item["inbound_ids"] = json.loads(item.pop("inbound_ids_json") or "[]")
+    item["quota_gb"] = round(item["quota_bytes"] / GB, 2) if item["quota_bytes"] else 0
+    item["enabled"] = bool(item["enabled"])
+    return item
+
+
+def validate_package(data):
+    name = data.get("name")
+    if not isinstance(name, str) or not (2 <= len(name.strip()) <= 48):
+        raise ValueError("Package name must be 2-48 characters.")
+    try:
+        quota_gb = float(data.get("quota_gb") or 0)
+        days = int(data.get("validity_days") or 0)
+        ip_limit = int(data.get("ip_limit") or 0)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Package quota, validity and IP limit must be numeric.")
+    if not 0 <= quota_gb <= 1000000:
+        raise ValueError("Package quota must be between 0 and 1,000,000 GB.")
+    if not 0 <= days <= 3650:
+        raise ValueError("Package validity must be between 0 and 3650 days.")
+    if not 0 <= ip_limit <= 10000:
+        raise ValueError("Package IP limit must be between 0 and 10,000.")
+    protocols = data.get("protocols", ["ssh"])
+    allowed = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
+    if not isinstance(protocols, list) or not protocols:
+        raise ValueError("Select at least one supported protocol.")
+    if any(not isinstance(p, str) or p not in allowed for p in protocols):
+        raise ValueError("Package contains an unsupported protocol.")
+    protocols = list(dict.fromkeys(protocols))
+    inbound_ids = data.get("inbound_ids", [])
+    if not isinstance(inbound_ids, list):
+        raise ValueError("Package inbound_ids must be an array.")
+    valid_ids = {ib["id"] for ib in list_inbounds()}
+    normalized_ids = []
+    for item in inbound_ids:
+        if isinstance(item, bool) or not str(item).isdigit() or int(item) not in valid_ids:
+            raise ValueError(f"Package references unknown inbound: {item}.")
+        normalized_ids.append(int(item))
+    return {
+        "name": name.strip(),
+        "quota_bytes": int(round(quota_gb * GB)),
+        "validity_days": days,
+        "ip_limit": ip_limit,
+        "protocols": protocols,
+        "inbound_ids": sorted(set(normalized_ids)),
+    }
+
+
+def list_packages():
+    conn = db()
+    rows = conn.execute("SELECT * FROM packages ORDER BY name COLLATE NOCASE").fetchall()
+    conn.close()
+    return [package_public(row) for row in rows]
+
+
+def create_package(data):
+    values = validate_package(data)
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = db()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO packages (name, quota_bytes, validity_days, ip_limit, "
+            "protocols_json, inbound_ids_json, enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (values["name"], values["quota_bytes"], values["validity_days"],
+             values["ip_limit"], json.dumps(values["protocols"]),
+             json.dumps(values["inbound_ids"]), now, now),
+        )
+        package_id = cursor.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        conn.close()
+        raise ValueError("A package with this name already exists.")
+    conn.close()
+    audit_event("package.create", "package", package_id,
+                details={"name": values["name"]})
+    return package_id
+
+
+def update_package(package_id, data):
+    conn = db()
+    row = conn.execute("SELECT * FROM packages WHERE id=?", (package_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Package not found.")
+    current = package_public(row)
+    merged = {
+        "name": current["name"],
+        "quota_gb": current["quota_gb"],
+        "validity_days": current["validity_days"],
+        "ip_limit": current["ip_limit"],
+        "protocols": current["protocols"],
+        "inbound_ids": current["inbound_ids"],
+    }
+    merged.update(data)
+    values = validate_package(merged)
+    try:
+        conn.execute(
+            "UPDATE packages SET name=?, quota_bytes=?, validity_days=?, ip_limit=?, "
+            "protocols_json=?, inbound_ids_json=?, updated_at=? WHERE id=?",
+            (values["name"], values["quota_bytes"], values["validity_days"],
+             values["ip_limit"], json.dumps(values["protocols"]),
+             json.dumps(values["inbound_ids"]),
+             datetime.now().isoformat(timespec="seconds"), package_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        conn.close()
+        raise ValueError("A package with this name already exists.")
+    conn.close()
+    audit_event("package.update", "package", package_id,
+                details={"name": values["name"]})
+    return package_id
+
+
+def delete_package(package_id):
+    conn = db()
+    row = conn.execute("SELECT name FROM packages WHERE id=?", (package_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Package not found.")
+    if conn.execute("SELECT 1 FROM users WHERE package_id=? LIMIT 1",
+                    (package_id,)).fetchone():
+        conn.close()
+        raise ValueError("Package is assigned to users. Unassign them before deletion.")
+    conn.execute("DELETE FROM packages WHERE id=?", (package_id,))
+    conn.commit()
+    conn.close()
+    audit_event("package.delete", "package", package_id,
+                details={"name": row["name"]})
+
+
+def package_snapshot(row):
+    return {
+        "id": row["id"], "name": row["name"],
+        "quota_bytes": row["quota_bytes"],
+        "validity_days": row["validity_days"],
+        "ip_limit": row["ip_limit"],
+        "protocols": json.loads(row["protocols_json"] or '["ssh"]'),
+        "inbound_ids": json.loads(row["inbound_ids_json"] or "[]"),
+    }
+
+
 def create_user(data):
     raw_username = data.get("username") or ""
     if not isinstance(raw_username, str):

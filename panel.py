@@ -1425,7 +1425,10 @@ def check_inbound_capacity(protocols, exclude_user_id=None, inbound_ids=""):
 
 
 def create_user(data):
-    username = (data.get("username") or "").strip()
+    raw_username = data.get("username") or ""
+    if not isinstance(raw_username, str):
+        raise ValueError("Username must be text.")
+    username = raw_username.strip()
     if not USERNAME_RE.match(username):
         raise ValueError("Username must be 3-32 chars, start with a letter, "
                          "and use lowercase letters, digits, - or _.")
@@ -1435,7 +1438,7 @@ def create_user(data):
     allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
     if not isinstance(requested_protocols, list) or not requested_protocols:
         raise ValueError("Pick at least one protocol.")
-    if any(p not in allowed_protocols for p in requested_protocols):
+    if any(not isinstance(p, str) or p not in allowed_protocols for p in requested_protocols):
         raise ValueError("One or more selected protocols are unsupported.")
     protocols = list(dict.fromkeys(requested_protocols))
     inbound_ids = clean_inbound_ids(data)
@@ -1547,7 +1550,8 @@ def update_user(user_id, data):
         allowed_protocols = {"ssh", "vless", "vmess", "trojan", "shadowsocks", "ovpn"}
         if not isinstance(new_protocols, list) or not new_protocols:
             raise ValueError("A user must have at least one enabled protocol.")
-        if any(p not in allowed_protocols and p not in protocols for p in new_protocols):
+        if any(not isinstance(p, str) or
+               (p not in allowed_protocols and p not in protocols) for p in new_protocols):
             raise ValueError("One or more selected protocols are unsupported.")
         new_protocols = list(dict.fromkeys(new_protocols))
         if new_protocols != protocols:

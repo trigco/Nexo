@@ -59,6 +59,25 @@ class WebSocketTests(unittest.TestCase):
             left.close()
             right.close()
 
+    def test_ssh_upstream_eof_sends_close_and_unblocks_client(self):
+        client, proxy_client = socket.socketpair()
+        upstream_peer, upstream = socket.socketpair()
+        thread = threading.Thread(
+            target=wsproxy.ssh_to_websocket,
+            args=(upstream, proxy_client, threading.Lock()),
+        )
+        thread.start()
+        upstream_peer.close()
+        first, second = client.recv(2)
+        self.assertEqual(first, 0x88)
+        self.assertEqual(second, 2)
+        self.assertEqual(client.recv(2), b"\\x03\\xe8")
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+        client.close()
+        proxy_client.close()
+        upstream.close()
+
     def test_server_frame_is_binary_and_unmasked(self):
         left, right = socket.socketpair()
         try:

@@ -231,11 +231,25 @@ def _parse_buffered_frame(sock, pending):
 
 
 def ssh_to_websocket(upstream, client, send_lock):
-    while True:
-        data = upstream.recv(65536)
-        if not data:
-            break
-        send_frame(client, data, opcode=2, lock=send_lock)
+    try:
+        while True:
+            data = upstream.recv(65536)
+            if not data:
+                break
+            send_frame(client, data, opcode=2, lock=send_lock)
+    except OSError:
+        pass
+    finally:
+        # Wake the client-frame reader when sshd closes first, avoiding a
+        # stranded handler thread. If the client already closed, this is best effort.
+        try:
+            send_frame(client, struct.pack("!H", 1000), opcode=8, lock=send_lock)
+        except OSError:
+            pass
+        try:
+            client.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass
 
 
 def handle(client):

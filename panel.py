@@ -1380,7 +1380,7 @@ def create_user(data):
     check_inbound_capacity(protocols, inbound_ids=inbound_ids)
     password = data.get("password") or secrets.token_urlsafe(12)
     if not isinstance(password, str) or not (8 <= len(password) <= 128) or any(
-            ch in password for ch in ("\\n", "\\r", "\\x00")):
+            ch in password for ch in ("\n", "\r", "\x00")):
         raise ValueError("Credential must be 8-128 characters and contain no line breaks.")
     try:
         days = int(data.get("days") if data.get("days") is not None else 30)
@@ -1510,11 +1510,11 @@ def update_user(user_id, data):
     if "password" in data and data["password"]:
         new_password = data["password"]
         if not isinstance(new_password, str) or not (8 <= len(new_password) <= 128) or any(
-                ch in new_password for ch in ("\\n", "\\r", "\\x00")):
+                ch in new_password for ch in ("\n", "\r", "\x00")):
             raise ValueError("Credential must be 8-128 characters and contain no line breaks.")
         if "ssh" in protocols:
             proc = subprocess.run(
-                ["chpasswd"], input=f"{row['username']}:{new_password}\\n",
+                ["chpasswd"], input=f"{row['username']}:{new_password}\n",
                 capture_output=True, text=True,
             ) if not MOCK else subprocess.CompletedProcess([], 0, "", "")
             if not MOCK and proc.returncode != 0:
